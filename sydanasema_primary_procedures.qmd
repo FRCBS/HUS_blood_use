@@ -1,0 +1,229 @@
+---
+title: "Find primary procedures for all Sydänasemat"
+author: "Esa Turkulainen"
+date: today
+format: 
+  html:
+    code-fold: true
+self-contained: true
+---
+
+```{r}
+# Libraries n such
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+```
+
+# Load data
+
+We'll use `apotti_toimenpide.rds` to get our procedures, but we also need `transfusion data` to filter them down to the relevant cases. This may change in the future when we need to look also at people who did not receive a transfusion.
+
+```{r}
+procs <- readRDS("./results/data/apotti_toimenpide.rds")
+transf <- readRDS("./results/data/transfusions_clean.rds") %>%
+    mutate_all(~if_else(is.nan(.), NA, .)) # "this one weird trick" (6.6.2024)
+fj <- readRDS("./results/data/master_blood_use.rds")
+oper <- readRDS("./results/data/apotti_operaatiot.rds")
+IDs_oper <- intersect(oper$henkilotunnus, transf$henkilotunnus)
+IDs_proc <- intersect(procs$henkilotunnus, transf$henkilotunnus)
+proc_filtered <- procs %>%
+    filter(henkilotunnus %in% IDs_proc)
+oper_filtered <- oper %>%
+    filter(henkilotunnus %in% IDs_oper)
+
+rm(procs, transf, oper)
+```
+
+# Filter data
+
+```{r}
+oper_clean <- oper_filtered %>%
+    filter(!is.na(pot_eala_koodi)) %>%
+    filter(!is.na(potilas_salista))
+    # 24,038 rows
+    # Of which 2,042 (8.49%) are a Sydänasema of some sort
+
+# Find Sydänasema rows
+oper_sydan <- oper_clean[grep("Sydänasema", oper_clean$leikkaava_yksikko_selite), ]
+
+# Select on only Sydänasema patients from procedures
+# (to make processing quicker)
+IDs <- unique(oper_sydan$henkilotunnus)
+proc_sydan_patients <- proc_filtered %>%
+    filter(henkilotunnus %in% IDs)
+
+# Find Sydänasema rows
+proc_sydan <- proc_sydan_patients[grep("Sydänasema", proc_sydan_patients$toteuttava_toimipiste_selite), ]
+```
+
+## Intermission: proc_code frequencies
+
+```{r}
+# How many procedures have
+# FX or TF prefix?
+
+# Number of unique codes
+uniq_proc <- n_distinct(proc_sydan$toimenpide_koodi) # 111
+
+# Count FX or TF
+ftfx <- proc_sydan %>%
+  mutate(TF_FX = ifelse(substr(toimenpide_koodi, 1, 2) %in% c("TF", "FX"), 
+                        1, 
+                        0))
+sum(ftfx$TF_FX) # 31
+
+# Or are the majority prefixes F (excl. FX)?
+proc_sydan %>%
+  filter(substr(toimenpide_koodi, 1, 2) != "FX") %>%
+  nrow() # 4542
+proc_sydan %>%
+  filter(substr(toimenpide_koodi, 1, 2) != "FX") %>%
+  filter(substr(toimenpide_koodi, 1, 1) == "F") %>%
+  nrow() # 3600
+# 3600/4532 = 79.26
+
+sort(table(proc_sydan$toimenpide_koodi))
+```
+
+# Process
+
+```{r}
+primaries <- c("Sepelvaltimon suonensisäinen laajennus stentillä (sisältää pallolla tehtävän esilaajennuksen)",
+               "Sepelvaltimon suonensisäinen laajennushoito (PTCA) pelkkää palloa käyttäen",
+               "Mitraaliläpän vuodon hoitaminen suonensisäisesti asetetulla klipsillä",
+               "Sepelvaltimon kroonisen totaalitukoksen suonensisäinen laajennushoito (PTCA)",
+               "Sydänlihaksen verenvirtauksen isotooppitutkimus kuormituksen aikana",
+               "Koepalan otto laskimoteitse oikeasta kammiosta",
+               "Tyypillisen eteislepatuksen ablaatio",
+               "IABP:n asettaminen ja käyttö",
+               "Tahdistimen asennus, eteis- ja kammiojohdin, DDD(R)",
+               "Vasemman sepelvaltimon päärungon suonensisäinen laajennushoito (PTCA)",
+               "Aorttaläppäproteesin asentaminen suonensisäisesti reisivaltimon kautta",
+               "Sepelvaltimon suonensisäinen laajennushoito (PTCA) useamman kuin yhden pääsuonirungon alueelle samassa toimenpiteessä",
+               "Sepelvaltimon suonensisäinen laajennushoito (PTCA) lääkepalloa käyttäen",
+               "Sepelvaltimon restenoosin suonensisäinen laajennushoito (PTCA)",
+               "Eteiskorvakkeen sulku tai poisto suonensisäisesti laitteella",
+               "Sepelvaltimon katetrilla tehtävä trombektomia",
+               "Laskimosiirteen suonensisäinen laajennushoito (PTCA)",
+               "Tahdistimen asennus, kammiojohdin, VVI(R)",
+               "Eteiskammiosolmukkeen kiertoaktivaation ablaatio",
+               "Rytmihäiriötahdistimen asennus, eteis- ja kammiojohdin, DDD(R)",
+               "Johdottoman tahdistimen asennus",
+               "ASD:n sulku suonensisäisesti, ostium secundum -tyyppi",
+               "Eteisvärinän ablaatio",
+               "Muu pysyvän tahdistimen ja johtimen asettaminen laskimotietä",
+               "Stenttitromboosin suonensisäinen laajennushoito (PTCA)",
+               "Tahdistingeneraattorin vaihto, DDD(R)",
+               "Biventrikulaarisen tahdistimen asennus, kammiojohtimet, CRT-P (VVIR)",
+               "Biventrikulaarisen rytmihäiriötahdistimen asennus, eteis- ja kammiojohtimet, CRT-D (DDDR)",
+               "Rytmihäiriötahdistimen asennus, kammmiojohdin, VVI(R)",
+               "Eteis-kammiosolmukkeen katkaisu tai modifikaatio",
+               "Foramen ovalen sulku, suonensisäinen",
+               "Rakenteelliseen sydänvikaan liittyvän kammiotakykardian ablaatio",
+               "Aorttaläpän valvuloplastia suonensisäisesti pallokatetrilla",
+               "Valtimon korjaaminen suljetusti,a. iliaca externa",
+               "Tahdistimen tai sisäisen defibrillaattorin johtimen poisto laskimosta ilman leikkausta",
+               "Epätyypillisen eteislepatuksen ablaatio",
+               "Eteiskorvakkeen sulku tai poisto  ulkokautta sulkulaitteella",
+               "Valtimon korjaaminen suljetusti,a. iliaca communis",
+               "Valtimon sisäistutteen asettaminen, a. iliaca externa",
+               "Muun kammioperäisen takykadian ablaatio",
+               "Katetrilla tehtävä alkoholiseptaaliablaatio",
+               "Sydämen eteisen suonensisäinen koepalan otto",
+               "Ihonalaisen rytmihäiriötahdistimen asettaminen",
+               "Sydämen tahdistimen asennus läpivalaisuohjauksessa",
+               "Keuhkovaltimon suonensisäinen angioplastia",
+               "Muun laskimon suonensisäinen laajennushoito (PTA)",
+               "Alaonttolaskimon suonensisäinen laajennushoito (PTA)",
+               "Yläonttolaskimon suonensisäinen laajennushoito (PTA) ja stentin asennus",
+               "Alaraaja- tai alaonttolaskimon suonensisäinen laajennus stentillä",
+               "Mitraaliläpän valvuloplastia",
+               "Biventrikulaarisen tahdistimen asennus, eteis- ja kammiojohtimet, CRT-P (DDDR)",
+               "Aorttaläppäproteesin asentaminen katetritoimenpiteellä, valve-in-valve",
+               "Sydämen ja/tai sepelvaltimoiden varjoainetutkimus", # varjoainetutkimus labels added later
+               "Sydämen vasemman puolen varjoainetutkimus (kardioangiografia)",
+               "Rinta-aortan varjoainetutkimus",
+               "Sydämen oikean puolen varjoainetutkimus (kardioangiografia)",
+               "Rinta-aortan erittäin laaja varjoainetutkimus")
+
+saveRDS(primaries, "./results/data/sydanasema_primaryproc_label_vector.rds")
+
+proc_with_rank <- proc_sydan %>%
+  mutate(primary = if_else(toimenpide_selite %in% primaries, TRUE, FALSE))
+
+proc_with_rank_mult <- proc_with_rank %>%
+  group_by(henkilotunnus, toimenpide_hetki) %>%
+  filter(sum(primary) > 1) %>%
+  ungroup()
+
+people_w_no_primaries <- proc_with_rank %>%
+  group_by(henkilotunnus) %>%
+  filter(!any(primary)) # 103 rows, 50 patients
+
+nrow(proc_with_rank)
+nrow(proc_with_rank_mult)
+n_distinct(proc_with_rank_mult$henkilotunnus)
+```
+
+```{r}
+# Let us now look at the patients who have multiprimaries
+# View(proc_with_rank_mult)
+# We know that our #1 issue is that if a patient has anything to do with
+# "sepelvaltimo", it's always a primary, so there's going to be lots of those.
+# For now, we'll select randomly primaries among them, with the following procedure:
+# If a patient doesn't have any labels (within a toimenpide_hetki) containing "sepel", we'll sort them out later. 
+# If a patient has a conflicting multiple: "sepel" vs. non-"sepel", we choose "sepel".
+# When choosing from multiple "sepel", draw randomly.
+
+# Set of "sepel" labels (w/o varjoainetutkimukset):
+sepel_labels <- setdiff(unique(grep("sepel", proc_with_rank$toimenpide_selite, value = T, ignore.case = T)),
+                        unique(grep("varjo", proc_with_rank$toimenpide_selite, value = T, ignore.case = T))) # 14 pcs
+
+# Assuming the data frame is grouped by 'henkilotunnus'
+sepel_primaries <- proc_with_rank_mult %>%
+  filter(toimenpide_selite %in% sepel_labels & primary) %>%
+  group_by(henkilotunnus, toimenpide_hetki) %>%
+  slice_sample(n = 1) %>%
+  mutate(sepel_primary = TRUE) %>%
+  ungroup()
+
+# Now, deal with people that have multiprimaries without "sepel" (anywhere)
+nonsepel_primaries <- proc_with_rank_mult %>%
+  group_by(henkilotunnus, toimenpide_hetki) %>%
+  filter(!any(toimenpide_selite %in% sepel_labels)) %>%
+  ungroup()
+
+# There are now only
+n_distinct(nonsepel_primaries$henkilotunnus) # 15
+# individuals left. We could just draw randomly among primaries, but I notice that
+# we are probably better off selecting the longest label (#chr).
+
+nonsepel_primaries <- nonsepel_primaries %>%
+  filter(primary) %>%
+  mutate(selite_pituus = nchar(toimenpide_selite)) %>%
+  group_by(henkilotunnus, toimenpide_hetki) %>%
+  slice_max(n = 1, order_by = selite_pituus) %>%
+  slice(1) %>% # for equal length labels
+  mutate(nonsepel_primary = TRUE) %>%
+  select(-selite_pituus) %>%
+  ungroup()
+
+# Now we'll just join these to proc_with_rank and filter accordingly
+primaries_resolved <- proc_with_rank %>%
+  left_join(sepel_primaries, by = intersect(names(proc_with_rank), names(sepel_primaries))) %>%
+  left_join(nonsepel_primaries, by = intersect(names(proc_with_rank), names(nonsepel_primaries))) %>%
+  tidyr::replace_na(list(sepel_primary = FALSE, nonsepel_primary = FALSE)) %>%
+  filter(primary) %>%
+  mutate(resolved_multi = sepel_primary | nonsepel_primary) %>%
+  group_by(henkilotunnus, toimenpide_hetki) %>%
+  mutate(is_multi = any(resolved_multi)) %>%
+  mutate(resolved_primary = (is_multi & resolved_multi) | !is_multi) %>%
+  filter(resolved_primary)
+# 1,401 individuals, 1,969 rows
+# DONE! :)
+```
+
+```{r}
+saveRDS(primaries_resolved, "./results/data/sydan_proc_primaries_map.rds")
+```

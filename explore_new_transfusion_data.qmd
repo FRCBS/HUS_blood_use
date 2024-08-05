@@ -1,0 +1,136 @@
+---
+title: "explore new blood data"
+format: html
+---
+
+```{r}
+# Libraries
+library(reticulate) # for pyenv stuff
+pandas <- import("pandas") # for fastparquet to work
+library(parallel) # for detectCores
+library(doParallel) # for registerDoParallel
+library(tidyr) # for unnest
+library(dplyr)
+library(ggplot2) # for plotting
+library(purrr) # for map_int
+```
+
+Load in new import
+
+```{r}
+#new_veri_info_path <- file.path("~/mounts/import/import//2024_05_28-13_10_40", "03068_verivalmisteet_28052024")
+#new_veri_info <- read_snappy_parquet_optimized(new_veri_info_path)
+
+#saveRDS(new_veri_info, "./results/data/verensiirtotoimenpiteet.rds")
+```
+
+Load in saved rds'
+
+```{r}
+master <- readRDS("./results/data/master_blood_use.rds")
+uinfo <- readRDS("./results/data/veri_admin_info.rds")
+utransf <- readRDS("./results/data/ORD_veri_admin.rds")
+transf <- readRDS("./results/data/verensiirtotoimenpiteet.rds")
+```
+
+Let's check something I'm wondering
+
+```{r}
+pdf <- transf %>%
+    group_by(toimenpide_nayttonimi) %>%
+    mutate(toim_n = n()) %>%
+    mutate(completeness = 1 - sum(is.na(verituote_numero)) / toim_n) %>%
+    ungroup() %>%
+    filter(completeness != 0) %>%
+    select(toimenpide_nayttonimi, toim_n, completeness) %>%
+    distinct()
+
+pdf
+
+hata <- transf %>%
+    filter(toimenpide_nayttonimi == "Hätäverensiirto")
+```
+
+Turns out that the actual transfusions happen when `toimenpide_nayttonimi` is one of "Punasolujen siirto", "Trombosyyttien siirto", and "Jääplasman siirto:". Exceptions: "Hätäverensiirto" and various specifics for "Jääplasman siirto".
+
+Anyways, we'll continue with the data that contains ycodes (`verituote_numero`) as it most likely matches to products transferred and matched in our master blood use table already.
+
+```{r}
+transf_valid <- transf %>%
+    filter(!is.na(verituote_numero))
+```
+
+# Investigate kaynti_id
+
+This should correspond to shjakso identifier in other tables?
+
+```{r}
+kaynti <- readRDS("./results/data/apotti_kaynti.rds")
+oh <- readRDS("./results/data/apotti_osastohoito.rds")
+```
+
+get ids
+
+```{r}
+all_shid <- unique(transf_valid$kaynti_id)
+kaynti_shid <- unique(kaynti$shjakso_numero)
+oh_shid <- unique(oh$shjakso_numero)
+```
+
+check coverage
+
+```{r}
+all_x_k <- intersect(kaynti_shid, all_shid) # 80.9% found in kaynti
+all_not_k <- setdiff(all_shid, kaynti_shid)
+k_not_all <- setdiff(kaynti_shid, all_shid)
+
+all_x_o <- intersect(oh_shid, all_shid) # 72.1% found in oh
+all_not_o <- setdiff(all_shid, kaynti_shid)
+o_not_all <- setdiff(kaynti_shid, all_shid)
+```
+
+# Maaraysnumero
+
+Elissa reported that 100% of the new transfusion entries map to old transfusion entries by `maaraysnumero` if we make sure that an entry has a start time and a ycode. Let's confirm this here.
+
+```{r}
+transf_valid <- transf %>%
+    filter(!is.na(verituote_numero) & !is.na(verenanto_aloitus))
+utransf_valid <- utransf %>%
+    filter(!is.na(veri_yksikko_num) & !is.na(veri_alku_aika))
+
+setdiff(transf_valid$maarays_id, utransf_valid$maarays_numero) # 0
+setdiff(utransf_valid$maarays_numero, transf_valid$maarays_id) # 150
+```
+
+It seems best we left_join the new data to old data so that the old data gets populated with shjakso ids. There will be 150 units that don't get it, but we can work with it.
+
+# Explore left_join
+
+```{r}
+joined <- utransf_valid %>%
+    left_join(transf_valid, by = c("maarays_numero" = "maarays_id"))
+```
+
+There are two duplicated maarays_numero in joined. What are they?
+
+```{r}
+dup <- joined %>%
+    group_by(maarays_numero) %>%
+    filter(n() > 1)
+
+nrow(utransf_valid) # 109 052
+length(unique(utransf_valid$maarays_numero)) # 109 052
+
+nrow(transf_valid) # 108 902
+length(transf_valid$maarays_id) # 108 904
+```
+
+The duplicate is simply a duplicated row in transf_valid. The duplication happens because the free form entry in "yhteenveto" seems to "run into 2nd line". Cursed data entry design. Does this happen in the unfiltered version as well?
+
+```{r}
+dup2 <- transf %>%
+    group_by(maarays_id) %>%
+    filter(n() > 1)
+```
+

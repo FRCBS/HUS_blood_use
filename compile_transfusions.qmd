@@ -1,0 +1,630 @@
+---
+title: "Compiling transfusion data"
+author: "Esa Turkulainen"
+date: today
+format: 
+  html:
+    code-fold: true
+    toc: true
+self-contained: true
+---
+
+This is an "export" of earlier compile_transfusions.R, which was getting difficult to comment/document.
+
+```{r}
+#| label: libraries
+#| code-fold: true
+#| code-summary: Load libraries
+
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+```
+
+# Load data
+
+We load in three tables here. The first one is our old and trusty `veri_admin_info`, containing data on transfused units of blood products. The second one is the original `ORD_veri_admin` containing data on transfusion events. The third one is a table we received in May 2024, where these transfusions have also shjakso identifiers attached. Our goal is to compile a single table with transfusion events with all the relevant data from all these three tables.
+
+```{r}
+#| label: load-data
+#| code-fold: true
+#| code-summary: Load data
+
+veri_admin_info <- readRDS("./results/data/veri_admin_info.rds")
+ord <- readRDS("./results/data/ORD_veri_admin.rds")
+transf_new <- readRDS("./results/data/verensiirtotoimenpiteet.rds")
+```
+
+# Checks
+
+How reliable are `maarays_numero` or ycodes in identifying a transfusion?
+
+## Transfusion table
+
+```{r}
+#| label: checks-transfusions
+#| code-fold: true
+#| code-summary: Check transfusion table
+
+# Transfusions
+# 1. Are there many different ycodes within the same maarays_numero?
+c <- imp_ord %>%
+    filter(!is.na(veri_yksikko_num)) %>%
+    group_by(henkilotunnus, maarays_numero) %>%
+    filter(n() > 1) %>%
+    group_by(henkilotunnus, maarays_numero, veri_yksikko_num) %>%
+    filter(n() < 2) # no
+# 2. Are there many different maarays_numero within the same ycode?
+c2 <- imp_ord %>%
+    filter(!is.na(veri_yksikko_num)) %>%
+    group_by(henkilotunnus, veri_yksikko_num) %>%
+    filter(n() > 1) %>%
+    group_by(henkilotunnus, veri_yksikko_num, maarays_numero) %>%
+    filter(n() < 2) # yes, ~600, seems to be related to the stoppage and restart
+                    # of transfusion of the same product?
+```
+
+The transfusion data reveals that maarays_numero might be the most reliable indicator of a timestamped transfusion event: there are no different ycodes within a maarays_numero but there can be several different maarays_numero within the same ycode. On (cursory) inspection it would seem that when the same ycode has multiple maarays_numeros, the time stamps differ, possibly indicating a pause and reinitiation of a transfusion?
+
+## Unit table
+
+```{r}
+#| label: checks-units
+#| code-fold: true
+#| code-summary: Check unit table
+
+# Transfusions
+# 1. Are there many different ycodes within the same maarays_numero?
+c3 <- veri_admin_info %>%
+    filter(!is.na(veri_admin_yksikko)) %>%
+    group_by(henkilotunnus, maarays_numero) %>%
+    filter(n() > 1) %>%
+    group_by(henkilotunnus, maarays_numero, veri_admin_yksikko) %>%
+    filter(n() < 2) # yes, 6 instances
+# 2. Are there many different maarays_numero within the same ycode?
+c4 <- veri_admin_info %>%
+    filter(!is.na(veri_admin_yksikko)) %>%
+    group_by(henkilotunnus, veri_admin_yksikko) %>%
+    filter(n() > 1) %>%
+    group_by(henkilotunnus, veri_admin_yksikko, maarays_numero) %>%
+    filter(n() < 2) # yes, ~700 instances
+```
+
+It makes sense that there would be many different maarays_numero within the same ycode as we found this also in the transfusion data and suspected it relates to initiation and reinitiation of a transfusion (of the same product), but we did not find any instances of many different ycodes within the same maarays_numero in the transfusion data, and here there are six instances. Can we find those six instances from the transfusion data?
+
+```{r}
+anomalies <- imp_ord %>%
+    filter(henkilotunnus %in% unique(c3$henkilotunnus))
+```
+
+Yes, we can!
+
+## Fix anomalous cases by hand
+
+**NB!!** Our manual fixes caused issues with duplication removal, so we're currently not using the final output of this cell.
+
+**NB 2!!** When exporting to GitHub and FRCBS document storage, remove this chunk!
+
+```{r}
+< CENSORED >
+```
+
+## Investigate duplicate maarays_numeros
+
+```{r}
+#| label: get-duplicates-in-maarays_numero-in-unit-data
+#| code-fold: true
+#| code-summary: Get rows of duplicated maarays_numero in unit data
+
+dupe_mns <- veri_admin_info %>%
+    group_by(maarays_numero) %>%
+    filter(n() > 1)
+```
+
+There are some "pure" duplicates, i.e. rows with no additional or missing info, but there are also some duplicated maarays_numero rows, where some of the fields are missing. Let's first remove all pure duplicates.
+
+```{r}
+#| label: remove-pure-duplicates-from-unit-data
+#| code-fold: true
+#| code-summary: Remove pure duplicates
+
+unit_data_distinct <- veri_admin_info %>%
+    distinct()
+```
+
+Now find maarays_numero duplicates again
+
+```{r}
+dupe_mns <- unit_data_distinct %>%
+    group_by(maarays_numero) %>%
+    filter(n() > 1)
+```
+
+We came down from >40k rows to >5.7k with this. Next, we see a lot of rows where only the maarays_numero field has data, all other are NA. We remove those next. This is not strictly necessary for the final join, because it relies on `veri_admin_yksikko` existing, but this will make my (Esa) investigations easier.
+
+```{r}
+#| label: remove-cases-of-NA-adjacents
+#| code-fold: true
+#| code-summary: Remove rows with all NAs (except maarays_numero)
+
+unit_data_more_complete <- unit_data_distinct %>%
+    filter(!(is.na(veri_admin_exp_dttm) &
+             is.na(veri_admin_prod) &
+             is.na(veri_admin_type) &
+             is.na(veri_admin_yksikko)))
+```
+
+Now find maarays_numero dupes again
+
+```{r}
+dupe_mns <- unit_data_more_complete %>%
+    group_by(maarays_numero) %>%
+    filter(n() > 1)
+```
+
+Looking at this listing of maarays_numero -duplicates, we learn a couple of things.
+
+- There are still many NA ycodes. We should probably exclude those altogether from bloating our list of dupes.
+
+- Most dupes after that follow the pattern where there is seemingly one complete "real" entry, and another, with varying degree and placement of missing data.
+
+- There are some instances where neither of the dupes are complete rows.
+
+- There are some instances where both of the dupe rows are complete, and this is accompanied with identical ycode, __but different__ `veri_admin_type`.
+
+We should now drop missing ycodes, filter to most complete rows within maarays_numero group (with preference to veri_admin_prod), and then investigate further.
+
+```{r}
+#| label: make-unit-data-even-more-complete
+#| code-fold: true
+#| code-summary: Make unit data even more complete
+
+unit_data_max_completeness <- unit_data_more_complete %>%
+    filter(!is.na(veri_admin_yksikko)) %>%
+    # Give rows completeness score
+    mutate(completeness = rowSums(!is.na(.[-1]))) %>%
+    group_by(maarays_numero) %>%
+    # Filter first by existence of ecode
+    filter(!is.na(veri_admin_prod)) %>%
+    # Filter then by maximising completeness
+    filter(completeness == max(completeness)) %>% # NB! This keeps ties
+    select(-completeness)
+```
+
+Now find and view dupes again
+
+```{r}
+dupe_mns <- unit_data_max_completeness %>%
+    group_by(maarays_numero) %>%
+    filter(n() > 1)
+```
+
+We've come down to only 12 dupes (24 rows). Couple of these are only differentiated by expiration datetime, couple by veri_admin_type, and there are X instances where the same maarays_numero contains two different Y codes. We should ask about this (admittedly very tiny) discrepancy from Minna later, but for now we will proceed with just indiscriminately slicing the one of the duplicates to be left with unit_data with truly distinct rows in terms of maarays_numero. We'll leave in those weird X exceptions as they may map into transfusions properly.
+
+```{r}
+# Remove exceptions before slicing to preserve them
+excp_ids <- dupe_mns %>%
+    group_by(maarays_numero, veri_admin_yksikko) %>%
+    filter(n() < 2) %>%
+    ungroup() %>%
+    select(henkilotunnus) %>%
+    distinct()
+
+to_be_sliced <- unit_data_max_completeness %>%
+    filter(!(henkilotunnus %in% excp_ids$henkilotunnus))
+
+to_be_glued <- unit_data_max_completeness %>%
+ filter(henkilotunnus %in% excp_ids$henkilotunnus)
+
+sliced <- to_be_sliced %>%
+    group_by(maarays_numero, veri_admin_yksikko) %>%
+    slice_head(n = 1)
+
+unit_data <- bind_rows(sliced, to_be_glued) %>%
+    select(henkilotunnus, maarays_numero, veri_admin_yksikko, veri_admin_prod, veri_admin_type)
+```
+
+Save for posterity
+
+```{r}
+saveRDS(unit_data, "./results/data/unit_data.rds")
+
+# 3.7.2024 note for the future: there used to be unit_data_2.rds and transfusions_clean_2.rds
+# saved through this script, that added an extra column from the original table.
+# This is now done in the main pipeline, so the current unit_data.rds and transfusions_clean.rds
+# are the same as their "2" versions (hence "deprecating" the "2" versions).
+```
+
+# Try joining
+
+## Join by ycode and maarays_numero
+
+```{r}
+#| label: join-attempt
+#| code-fold: true
+#| code-summary: Join attempt 1
+
+join1 <- ord %>%
+    left_join(unit_data, by = c("veri_yksikko_num" = "veri_admin_yksikko", "maarays_numero", "henkilotunnus"))
+```
+
+Seems this successfully joins without any many-to-many or many-to-one matches (because join1 has as many rows as imp_ord), and we've successfully brought our ecodes to the mix.
+
+## Investigate result
+
+### How many Ecodes did we get?
+
+Our left_join operation is pretty strict, as we are matching with three conditions. There's a good chance that many unit_data entries won't map, resulting in many NAs in `veri_admin_prod`.
+
+```{r}
+sum(is.na(join1$veri_admin_prod))
+```
+
+The matching was remarkably successful, we are missing ecodes only in 0.15% of entries! We can probably work with that.
+
+### Duplicate maarays_numeros
+
+```{r}
+dupes_mn <- join1 %>%
+    group_by(maarays_numero) %>%
+    filter(n() > 1)
+```
+
+No duplicate maarays_numeros.
+
+### Duplicate ycodes
+
+```{r}
+dupes_y <- join1 %>%
+    group_by(veri_yksikko_num) %>%
+    filter(n() > 1)
+```
+
+1,829 rows of dupes, so around 900 instances. The vast majority are differentiated by ecodes (A or B product), and we can adjust for these by building a mock ycode.
+
+There are also instances where the ecode doesn't differentiate, but timestamp does. This can be accepted and handled as pause-unpause of transfusion. These get assigned different `maarays_numerot` but we can choose when analysing whether to focus on ycodes or transfusion `maarays_numero`.
+
+## Build helper ycode based on ecode
+
+```{r}
+#| label: build-helper-y
+#| code-fold: true
+#| code-summary: Build helper y
+
+# Remove NA ecodes before the analysis
+# (and then add them back in later)
+process_this <- join1 %>%
+    filter(!is.na(veri_admin_prod))
+bind_back <- join1 %>%
+    filter(is.na(veri_admin_prod))
+
+
+processed <- process_this %>%
+    group_by(veri_yksikko_num) %>%
+    # NB! We don't want ecodes to be flagged if they are NA.
+    mutate(helpcol = n() != sum(veri_admin_prod == first(veri_admin_prod))) %>%
+    mutate(help_y = ifelse(!helpcol, veri_yksikko_num, paste0(veri_yksikko_num, "_", substr(veri_admin_prod, 6, 8))))
+
+bind_back$helpcol <- rep(FALSE, nrow(bind_back))
+bind_back$help_y <- bind_back$veri_yksikko_num
+
+helpy <- bind_rows(processed, bind_back)
+```
+
+**Important note!** If you do the above and group ALSO by `henkilotunnus`, your "duplicate y but different e" instances won't be found. There are hundreds of instances where the same ycode is given to 2 different people (and with different `maarays_numero`), but it's actually a different product, as indicated by the ecode.
+
+By grouping only by veri_yksikko_num, we ensure that we can code that product information into `help_y` properly!
+
+Now check `help_y` duplicates!
+
+```{r}
+dupes_y2 <- helpy %>%
+    filter(!is.na(veri_admin_prod)) %>%
+    group_by(help_y) %>%
+    filter(n() > 1)
+```
+
+We're left with 106 rows (53 instances) of duplicates which aren't differentiated by product codes, but by time stamps, OR BY `henkilotunnus`. If we include NA ecode entries, we have 131 rows. The case where the same product+unit combo goes to different `henkilotunnus` shouldn't happen. Let's check how many of these we have:
+
+```{r}
+dupes_weird <- helpy %>%
+    group_by(help_y) %>%
+    filter(n() != sum(henkilotunnus == first(henkilotunnus)))
+```
+
+27 instances (54 rows). Most of these duplicates have the same `tilauspaiva`, but that can also vary in many instances. The date `2021-10-11 04:00:00` is especially challenging, as it contains multiple instances of these, and twice for some poor fellow. They all have distinct `veri_alku_aika` indicating possibly that these are real events, and so the ycode is more likely a mistake than the `henkilotunnus`. Most importantly, they all have unique `veri_ykiskko_res_id`. We will exploit this and create a yet another layer of extra info to the ycodes.
+
+```{r}
+#| label: helper-y-add-depth
+#| code-fold: true
+#| code-summary: Add more depth to help_y
+
+# There's unfortunately one entry with an invalid number, 
+# so we'll get one "ycode_NaN" in our data.
+# Maybe that won't be an issue?
+deepy <- helpy %>%
+    group_by(help_y) %>%
+    mutate(helpcol = n() != sum(henkilotunnus == first(henkilotunnus))) %>%
+    mutate(help_y = ifelse(!helpcol, help_y, paste0(help_y, "_", veri_ykiskko_res_id)))
+```
+
+Now check for duplicates.
+
+```{r}
+dupes_y3 <- deepy %>%
+    group_by(help_y) %>%
+    filter(n() > 1)
+```
+
+We are left with 77 rows of duplicates. These are not separable by ycode, ecode, or henkilotunnus. They are separable by `maarays_numero` and maybe time stamps. 
+
+We will reduce these into one single entry with the assumption that this is either a mistake or a "pause-unpause" event for the same unit. The reduction will be processed as follows:
+
+1. Compare timestamps. Keep the earliest start time and the latest end time.
+2. Delete the entry with the later start time, but record it's unique `maarays_numero` to a column called `maarays_numero_alt`. This way we aren't throwing that information away if we happen to need it in the future. Also, this column will then work as an indicator for those units that had this "two event" feature.
+
+```{r}
+#| label: reduce-rest-of-duplicates
+#| code-fold: true
+#| code-summary: Reduce rest of the duplicates
+
+reduced <- deepy %>%
+  group_by(help_y) %>%
+  arrange(help_y, veri_alku_aika) %>%
+  mutate(
+    maarays_numero_alt = lead(maarays_numero),
+    start_new = if_else(is.na(lead(veri_alku_aika)), veri_alku_aika, pmin(veri_alku_aika, lead(veri_alku_aika))),
+    end_new = if_else(is.na(lead(veri_loppu_aika)), veri_loppu_aika, pmax(veri_loppu_aika, lead(veri_loppu_aika)))
+  ) %>%
+  select(-veri_alku_aika, -veri_loppu_aika) %>%
+  rename(veri_alku_aika = start_new, veri_loppu_aika = end_new) %>%
+  filter(row_number() == 1) %>%
+  ungroup()
+```
+
+Now check help_y duplicates!
+
+```{r}
+dupes_y4 <- reduced %>%
+    group_by(help_y) %>%
+    filter(n() > 1)
+```
+
+None! We will now add info about product type and blood groups and save our output to be used in patient event matching.
+
+## Blood and product types, labels
+
+```{r}
+# Define product types
+RBC <- c("E3846V00", "E3847V00", "E7668V00", "E7673V00","A0092VA0", 
+            "A0092VB0", "E4683V00")
+WBC <- c("E3989V00")
+platelets <- c("E6860V00", "E6953V00", "E6875V00", "E6875VA0", "E6875VB0",
+               "E6874V00", "E6874VA0", "E6874VB0", "A0088V00", "A0088VA0",
+               "A0088VB0", "A0090V00", "A0090VA0", "A0090VB0", "A0089V00",
+               "A0089VA0", "A0089VB0", "E6782V00", "E6783V00")
+plasma <- c("X0001000", "X0002000", "X0003000", "X0004000")
+
+# Define blood groups
+ABO_A_unit <- c("06", "62", "66")
+ABO_B_unit <- c("17", "73", "77")
+ABO_O_unit <- c("51", "95", "55")
+ABO_AB_unit <- c("84", "28", "88")
+
+RhD_neg_unit <- c("06", "95", "17", "28")
+RhD_pos_unit <- c("51", "62", "84", "73")
+
+labeled <- reduced %>% 
+    select(-helpcol) %>%
+    relocate(henkilotunnus, maarays_numero, help_y, veri_yksikko_num, veri_admin_prod, veri_admin_type, veri_alku_aika, veri_loppu_aika, tilauspaiva, veri_ykiskko_res_id) %>%
+    mutate(product_type = case_when(
+        veri_admin_prod %in% RBC ~ "RBC",
+        veri_admin_prod %in% WBC ~ "WBC",
+        veri_admin_prod %in% platelets ~ "Platelets", 
+        veri_admin_prod %in% plasma ~ "Plasma", 
+        TRUE ~ NA)) %>%
+    mutate(
+        ABO_unit = case_when(
+            substr(veri_admin_type, start=1, stop=2) %in% ABO_A_unit ~ "A",
+            substr(veri_admin_type, start=1, stop=2) %in% ABO_B_unit ~ "B",
+            substr(veri_admin_type, start=1, stop=2) %in% ABO_O_unit ~ "O",
+            substr(veri_admin_type, start=1, stop=2) %in% ABO_AB_unit ~ "AB",
+            TRUE ~ NA
+        ),
+        RhD_unit = case_when(
+            substr(veri_admin_type, start=1, stop=2) %in% RhD_pos_unit ~ "pos",
+            substr(veri_admin_type, start=1, stop=2) %in% RhD_neg_unit ~ "neg",
+            TRUE ~ NA
+        )
+    ) %>%
+    group_by(henkilotunnus) %>%
+    arrange(veri_alku_aika) %>%
+    ungroup()
+```
+
+## Impute timestamps
+
+Check missingness:
+
+```{r}
+sum(is.na(labeled$veri_alku_aika)) # 6 004
+sum(is.na(labeled$veri_loppu_aika)) # 5 340
+sum(is.na(labeled$veri_alku_aika) & is.na(labeled$veri_loppu_aika)) # 5 333
+
+# Filter out rows where both are NA
+timestamped <- labeled %>%
+    filter(!(is.na(veri_alku_aika) & is.na(veri_loppu_aika)))
+
+sum(is.na(timestamped$veri_alku_aika)) # 671
+sum(is.na(timestamped$veri_loppu_aika)) # 7 
+```
+
+
+We assume a unit transfused if it has at least one timestamp: start or end. Most should obviously have both, but for some the other timestamp is missing. When the end time is missing, we assume non-systemic data entry error. When the start time is missing, **WE ASSUME BY EXPERT OPINION** that most of it is due to extremely urgent transfusions, where the logging of start time was not possible. This equates to **SYSTEMIC BIAS** in the data generation process for missing start times. Hence, **WE ASSUME** we cannot impute by sampling from the distribution of all transfusions.
+
+What we will do instead:
+
+1. For missing end times, estimate the distribution of transfusion durations per unit across the whole data set and sample from it to impute: `end_time = start_time + sampled_duration`.
+2. For missing end times, we need a "retroactive" approach. We'll match transfusions to extremely urgent operations (general idea of matching from [create_master_blood_use.qmd](create_master_blood_use.qmd)) and estimate the distribution of transfusion duration from that data. Then we will impute: `start_time = end_time - sampled_duration_from_urgents`.
+
+**Additional info:**
+- The "theoretical maximum" (according to an expert) is 6 hrs for the duration of transfusion. We'll want to prevent sampling outside this bound.
+- There should be a "theoretical minimum" also. A blood bag is unlikely to empty in 1 second, but we have several of those in the data. We might want to fix those to more realistic numbers at some point. 
+
+### Check duration distribution across all transfusions
+
+```{r}
+durations_all <- data.frame(duration = difftime(timestamped$veri_loppu_aika, timestamped$veri_alku_aika, units = "mins")) %>% filter(!is.na(duration))
+ggplot(durations_all, aes(x = log(as.numeric(duration)))) + 
+    geom_density() + 
+    scale_x_continuous(labels = function(x) round(exp(x) / 60, 2)) +
+    geom_vline(xintercept = log(10)) + # Highest spike at exactly 10 minutes, indicating some sort of "default entry"
+    geom_vline(xintercept = log(129)) + # Second highest peak (not as spiky as the 10 minute one) at 2 hrs and 9 minutes.
+    geom_vline(xintercept = log(34)) + # Third highest peak at 34 minutes.
+    geom_vline(xintercept = log(1)) + # Fourth highest peak (very small in relation) at (an impossible value of ?) 1 minute.
+    labs(x = "Hours") +
+    theme_minimal()
+
+ggsave("durations_overall.png", bg = "white")
+```
+
+### Check duration distribution across operation urgencies
+
+```{r}
+IDs <- unique(timestamped$henkilotunnus)
+
+# Load in operations
+oper_tg <- readRDS("./results/data/apotti_operaatiot.rds") %>%
+  filter(henkilotunnus %in% IDs)
+oper_tg_filtered <- oper_tg %>%
+  filter(!is.na(potilas_salista)) %>%
+  filter(!is.na(pot_eala_koodi))
+
+# Join
+op_transf <- oper_tg_filtered %>%
+  left_join(timestamped, by = c("henkilotunnus")) %>%
+  mutate(veri_operaation_alusta_tuntia = difftime(veri_alku_aika, potilas_saliin, units = "hours")) %>%
+  filter(veri_operaation_alusta_tuntia >= -6) %>% # we allow for preop transfusions max 6 hrs before
+  filter(veri_operaation_alusta_tuntia <= 174) %>% # we allow for postop transfusions max week + 6 hrs after
+  group_by(help_y) %>%
+  slice_min(order_by = abs(veri_operaation_alusta_tuntia)) %>%
+  slice(1) %>% # after the previous, 7 duplicates remain, force unique blindly
+  ungroup() %>%
+  mutate(sali_date = date(potilas_saliin),
+         veri_date = date(veri_alku_aika)) %>%
+  select(kiireellisyys, veri_alku_aika, veri_loppu_aika) %>%
+  mutate(duration = difftime(veri_loppu_aika, veri_alku_aika, units = "mins"))
+
+ggplot(op_transf, aes(x = log(as.numeric(duration)), color = kiireellisyys)) +
+    geom_density() +
+    scale_x_continuous(labels = function(x) round(exp(x) / 60, 2)) +
+    labs(x = "Hours") +
+    theme_minimal()
+
+ggsave("durations_by_urgency.png", bg = "white")
+```
+
+Our checks reveal a very spiky distribution, where some a handful of units are allegedly (but improbably) being transfused in 1 second, a large chunk is logged at exactly 10 minutes (size of chunk is dependent on urgency category), and the second largest majority is semi-evenly distributed around 2 hrs. The crudest conclusion is that the duration is either 10 minutes or "around 2 hrs", with an emphasis on 10 minutes if the urgency is either an organ transplant or the most urgent "Violet" category.
+
+### Do KDE
+
+```{r}
+kde_all <- density(log(as.numeric(durations_all$duration)))
+samples <- data.frame(sample = sample(kde_all$x, 100000, prob = kde_all$y, replace = T))
+
+# Test that it works
+ggplot(samples, aes(x = sample)) + 
+    geom_density() + 
+    scale_x_continuous(labels = function(x) round(exp(x) / 60, 2)) +
+    labs(x = "Hours") +
+    theme_minimal() # Works!
+
+ggsave("tmp.png", bg = "white")
+
+violets <- op_transf %>%
+    filter(kiireellisyys == "Violetti < 2 h") %>%
+    filter(!is.na(duration))
+
+kde_violet <- density(log(as.numeric(violets$duration)))
+violet_samples <- data.frame(sample = sample(kde_violet$x, 100000, prob = kde_violet$y, replace = T))
+
+# Test that it works
+ggplot(violet_samples, aes(x = sample)) + 
+    geom_density() + 
+    scale_x_continuous(labels = function(x) round(exp(x) / 60, 2)) +
+    labs(x = "Hours") +
+    theme_minimal() # Works!
+
+ggsave("tmp.png", bg = "white")
+```
+
+### Impute using KDEs
+
+```{r}
+kde_violet_tdiff <- data.frame(dur = make_difftime(minute = exp(kde_violet$x)), prob = kde_violet$y)
+kde_all_tdiff <- data.frame(dur = make_difftime(minute = exp(kde_all$x)), prob = kde_all$y)
+
+imputed <- timestamped %>%
+    mutate(alku_imputed = if_else(is.na(veri_alku_aika), TRUE, FALSE),
+           loppu_imputed = if_else(is.na(veri_loppu_aika), TRUE, FALSE)) %>%
+    mutate(veri_alku_aika = if_else(is.na(veri_alku_aika),
+                                  veri_loppu_aika - sample(kde_violet_tdiff$dur, 1, prob = kde_violet_tdiff$prob),
+                                  veri_alku_aika),
+           veri_loppu_aika = if_else(is.na(veri_loppu_aika),
+                                    veri_alku_aika + sample(kde_all_tdiff$dur, 1, prob = kde_all_tdiff$prob),
+                                    veri_loppu_aika)
+          )
+```
+
+### Deal with improbable durations
+
+```{r}
+shifted <- imputed %>%
+    mutate(dur = difftime(veri_loppu_aika, veri_alku_aika, units = "hours")) %>%
+    mutate(veri_loppu_aika = if_else(dur < 1/6, veri_alku_aika + 10 * 60, veri_loppu_aika)) %>% # if under 10 minutes, bring to 10 minutes
+    mutate(veri_loppu_aika = if_else(dur > 6, veri_alku_aika + 6 * 60 * 60, veri_loppu_aika)) %>% # if over 6h, bring down to 6h
+    select(-dur)
+```
+
+## Add new transfusions by left join
+
+We rename and select appropriate columns first.
+
+```{r}
+transf <- transf_new %>%
+    rename(
+        maarays_numero = maarays_id,
+        shjakso_numero = kaynti_id,
+        veri_yksikko_num = verituote_numero,
+        veri_kiire = kiireellisyys,
+        veri_kuvaus = toimenpide_nayttonimi,
+        veri_yhteenveto = yhteenveto
+    ) %>%
+    select(
+        henkilotunnus,
+        maarays_numero,
+        shjakso_numero,
+        veri_yksikko_num,
+        veri_kiire,
+        veri_kuvaus,
+        veri_yhteenveto
+    ) %>%
+    # Next we remove 2 silly duplicates caused by the "veri_yhteenveto" field
+    group_by(maarays_numero) %>%
+    slice(1) %>%
+    ungroup()
+
+final <- shifted %>%
+    left_join(transf, by = c("henkilotunnus", "maarays_numero", "veri_yksikko_num"))
+```
+
+# Save
+
+```{r}
+saveRDS(final, "./results/data/transfusions_clean.rds")
+
+# 3.7.2024 note for the future: there used to be unit_data_2.rds and transfusions_clean_2.rds
+# saved through this script, that added an extra column from the original table.
+# This is now done in the main pipeline, so the current unit_data.rds and transfusions_clean.rds
+# are the same as their "2" versions (hence "deprecating" the "2" versions).
+```

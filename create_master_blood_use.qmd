@@ -1,0 +1,2550 @@
+---
+title: "Match everything"
+author: "Esa Turkulainen"
+date: today
+format: 
+  html:
+    code-fold: true
+self-contained: true
+---
+
+```{r}
+# Libraries n such
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(lubridate)
+```
+
+# transfusions (cleaned 2)
+
+```{r}
+transf <- readRDS("./results/data/transfusions_clean.rds") %>%
+    mutate_all(~if_else(is.nan(.), NA, .)) # "this one weird trick" (6.6.2024)
+transf_wo_shnum <- transf %>% # handle separately if shjakso_num missing
+  filter(is.na(shjakso_numero))
+IDs <- unique(transf$henkilotunnus)
+transf_colnames <- names(transf)
+colnames_wo_shjakso <- transf_colnames[-28]
+```
+
+# diag + transf
+
+```{r}
+# Load preprocessed if it exists. If not, create it.
+if (!file.exists("./results/data/diag_flat.rds")){
+  # Load first batch of diag and reduce to IDs
+  diag1 <- readRDS("./results/data/apotti_diagnoosi_1.rds")
+  diag1_filtered <- diag1 %>%
+      filter(henkilotunnus %in% IDs)
+  rm(diag1)
+  # Load second batch of diag and reduce to IDs
+  diag2 <- readRDS("./results/data/apotti_diagnoosi_2.rds")
+  diag2_filtered <- diag2 %>%
+      filter(henkilotunnus %in% IDs)
+  rm(diag2)
+
+  diag_tg <- rbind(diag1_filtered, diag2_filtered) # target group events
+
+  diag_tg <- diag_tg %>%
+      mutate(kontakti_kayntityyppi_selite = ifelse(is.na(kontakti_kayntityyppi_selite), "Osastolla?", kontakti_kayntityyppi_selite))
+
+  diag_flat <- diag_tg %>%
+    mutate(main_diag_code = ifelse(paadiagnoosi, diagnoosi_koodi, NA),
+          main_diag_label = ifelse(paadiagnoosi, diagnoosi_selite, NA),
+          diag_oire = ifelse(syy_tai_oire == "OIRE", TRUE, FALSE),
+          diag_syy = ifelse(syy_tai_oire == "SYY", TRUE, FALSE),
+          diag_tapaturmatyyppi = ifelse(syy_tai_oire == "TAPATURMATYYPPI", TRUE, FALSE),
+          diag_ulkoinensyy = ifelse(syy_tai_oire == "ULKOINENSYY", TRUE, FALSE)) %>%
+    group_by(palvelutuote_numero) %>%
+    summarise(
+      henkilotunnus = first(henkilotunnus),
+      pot_sukupuoli_selite = first(pot_sukupuoli_selite),
+      shjakso_numero = first(shjakso_numero),
+      kontakti_vo_toimipiste_koodi = first(kontakti_vo_toimipiste_koodi),
+      kontakti_vo_toimipiste_selite = first(kontakti_vo_toimipiste_selite),
+      kontakti_kayntityyppi_koodi = first(kontakti_kayntityyppi_koodi),
+      kontakti_kayntityyppi_selite = first(kontakti_kayntityyppi_selite),
+      kontakti_alkuhetki = first(kontakti_alkuhetki),
+      kontakti_loppuhetki = first(kontakti_loppuhetki),
+      main_diag_code = first(na.omit(main_diag_code)),
+      main_diag_label = first(na.omit(main_diag_label)),
+      other_diag_code = paste(diagnoosi_koodi[paadiagnoosi == 0], collapse = ", "),
+      other_diag_label = paste(diagnoosi_selite[paadiagnoosi == 0], collapse = ", "),
+      diag_syyt_code = paste(diagnoosi_koodi[diag_syy == TRUE], collapse = ", "),
+      diag_syyt_label = paste(diagnoosi_selite[diag_syy == TRUE], collapse = ", "),
+      diag_oire_code = paste(diagnoosi_koodi[diag_oire == TRUE], collapse = ", "),
+      diag_oire_label = paste(diagnoosi_selite[diag_oire == TRUE], collapse = ", "),
+      diag_tapaturmatyyppi_code = paste(diagnoosi_koodi[diag_tapaturmatyyppi == TRUE], collapse = ", "),
+      diag_tapaturmatyyppi_label = paste(diagnoosi_selite[diag_tapaturmatyyppi == TRUE], collapse = ", "),
+      diag_ulkoinensyy_code = paste(diagnoosi_koodi[diag_ulkoinensyy == TRUE], collapse = ", "),
+      diag_ulkoinensyy_label = paste(diagnoosi_selite[diag_ulkoinensyy == TRUE], collapse = ", "),
+      .groups = 'drop'
+    )
+
+  # there are some duplications of codes/labels within some columns
+
+  # Let's remove those duplicates
+  diag_flat <- diag_flat %>%
+    mutate(other_diag_label = strsplit(other_diag_label, ",\\s*"),
+          other_diag_label = map_chr(other_diag_label, ~ paste(unique(.x), collapse = ", ")),
+          other_diag_code = strsplit(other_diag_code, ",\\s*"),
+          other_diag_code = map_chr(other_diag_code, ~ paste(unique(.x), collapse = ", ")),
+          diag_syyt_label = strsplit(diag_syyt_label, ",\\s*"),
+          diag_syyt_label = map_chr(diag_syyt_label, ~ paste(unique(.x), collapse = ", ")),
+          diag_syyt_code = strsplit(diag_syyt_code, ",\\s*"),
+          diag_syyt_code = map_chr(diag_syyt_code, ~ paste(unique(.x), collapse = ", ")),
+          diag_oire_label = strsplit(diag_oire_label, ",\\s*"),
+          diag_oire_label = map_chr(diag_oire_label, ~ paste(unique(.x), collapse = ", ")),
+          diag_oire_code = strsplit(diag_oire_code, ",\\s*"),
+          diag_oire_code = map_chr(diag_oire_code, ~ paste(unique(.x), collapse = ", ")),
+          diag_tapaturmatyyppi_label = strsplit(diag_tapaturmatyyppi_label, ",\\s*"),
+          diag_tapaturmatyyppi_label = map_chr(diag_tapaturmatyyppi_label, ~ paste(unique(.x), collapse = ", ")),
+          diag_tapaturmatyyppi_code = strsplit(diag_tapaturmatyyppi_code, ",\\s*"),
+          diag_tapaturmatyyppi_code = map_chr(diag_tapaturmatyyppi_code, ~ paste(unique(.x), collapse = ", ")),
+          diag_ulkoinensyy_label = strsplit(diag_ulkoinensyy_label, ",\\s*"),
+          diag_ulkoinensyy_label = map_chr(diag_ulkoinensyy_label, ~ paste(unique(.x), collapse = ", ")),
+          diag_ulkoinensyy_code = strsplit(diag_ulkoinensyy_code, ",\\s*"),
+          diag_ulkoinensyy_code = map_chr(diag_ulkoinensyy_code, ~ paste(unique(.x), collapse = ", ")))
+
+  # Save if this doesn't exist already
+  saveRDS(diag_flat, "./results/data/diag_flat.rds")
+
+} else {
+  diag_flat <- readRDS("./results/data/diag_flat.rds")
+}
+
+diag_transf <- diag_flat %>%
+    left_join(transf, by = c("henkilotunnus", "shjakso_numero")) %>%
+    ## Handle transf where shjakso_num missing
+    # Left join and separate columns w.r.t. to the stricter left_join
+    left_join(transf_wo_shnum, by = c("henkilotunnus"), suffix = c("_strict", "_loose")) %>%
+    # Coalesce _strict and _loose columns (imagine a zipper)
+    mutate(across(ends_with("_strict"), ~ coalesce(.x, get(gsub("_strict", "_loose", cur_column()))))) %>%
+    # Drop _loose (useless now)
+    select(-contains("_loose")) %>%
+    # Rename _strict by dropping "_strict"
+    rename_with(~ gsub("_strict", "", .x), ends_with("_strict")) %>%
+    # Prevent impossible matches
+    filter(!(kontakti_kayntityyppi_selite %in% c("Soitto", "Piilosoitto", "Hoitokirje", "Hoitopuhelu"))) %>%
+    # Compute main matching metric
+    mutate(veri_kontaktin_alun_jalkeen_tuntia = difftime(veri_alku_aika, kontakti_alkuhetki, units = "hours")) %>%
+    # We prefer matches with neatly contained intervals
+    mutate(crossage_penalty = if_else(veri_loppu_aika > kontakti_loppuhetki | veri_alku_aika < kontakti_alkuhetki, 9999, 0)) %>% # super dubious hack
+    # Filter by date
+    filter(date(kontakti_alkuhetki) <= date(veri_alku_aika) & (date(kontakti_loppuhetki) >= date(veri_alku_aika) | date(kontakti_loppuhetki) + 1 >= date(veri_alku_aika))) %>%
+    group_by(help_y) %>%
+    # "Filter" by closeness to transfusion w.r.t. penalty
+    slice_min(order_by = abs(veri_kontaktin_alun_jalkeen_tuntia) + crossage_penalty) %>%
+    # If still multiples, select the event with the furthest end time
+    slice_max(order_by = kontakti_loppuhetki) %>%
+    # If still multiples, pick "randomly" (the first in group)
+    slice(1) %>%
+    # Drop useless columns
+    select(-crossage_penalty) %>%
+    ungroup()
+
+# NB! IMPORTANT! READ THIS!
+# The above breaks one tiny specific thing in our data
+# We have to fix that here because the pipe is otherwise effective
+# and I don't want to redo it.
+# When we match with both strict and loose rules, some rows get matched
+# also with an RBC (loose) when the strict matching is Plasma.
+# Only 5 Plasma units have RhD_unit in the original data,
+# but when we coalesce (arbitrate NAs between strict and loose),
+# we end up imputing strict Plasma match RhD_units with RBC RhD_units.
+# In the resulting diag_transf df we can recognize the original Plas RhD
+# entries by NA veri_ykiskko_res_id, so we'll strip all other RhD_units
+# with !is.na(veri_ykiskko_res_id).
+# Hacky, I know. I'm tired.
+diag_transf_fix <- diag_transf %>%
+    mutate(RhD_unit = ifelse(!is.na(veri_ykiskko_res_id) & product_type == "Plasma" & !is.na(RhD_unit), NA, RhD_unit))
+
+nonmatched_transf <- transf %>%
+    filter(!(help_y %in% diag_transf_fix$help_y))
+nonmatched_diag <- diag_flat %>%
+    filter(!(palvelutuote_numero %in% diag_transf_fix$palvelutuote_numero)) %>%
+    filter(is.na(shjakso_numero))
+
+rematch <- nonmatched_diag %>%
+    left_join(nonmatched_transf, by = "henkilotunnus") %>%
+    # Prevent impossible matches
+    filter(!(kontakti_kayntityyppi_selite %in% c("Soitto", "Piilosoitto", "Hoitokirje", "Hoitopuhelu"))) %>%
+    # Compute main matching metric
+    mutate(veri_kontaktin_alun_jalkeen_tuntia = difftime(veri_alku_aika, kontakti_alkuhetki, units = "hours")) %>%
+    # We prefer matches with neatly contained intervals
+    mutate(crossage_penalty = if_else(veri_loppu_aika > kontakti_loppuhetki | veri_alku_aika < kontakti_alkuhetki, 9999, 0)) %>% # super dubious hack
+    # Filter by date
+    filter(date(kontakti_alkuhetki) <= date(veri_alku_aika) & (date(kontakti_loppuhetki) >= date(veri_alku_aika) | date(kontakti_loppuhetki) + 1 >= date(veri_alku_aika))) %>%
+    group_by(help_y) %>%
+    # "Filter" by closeness to transfusion w.r.t. penalty
+    slice_min(order_by = abs(veri_kontaktin_alun_jalkeen_tuntia) + crossage_penalty) %>%
+    # If still multiples, select the event with the furthest end time
+    slice_max(order_by = kontakti_loppuhetki) %>%
+    # If still multiples, pick "randomly" (the first in group)
+    slice(1) %>%
+    # Now we might have some shjakso_numero (in .y) for the missing shjakso_numero
+    rename(shjakso_numero = shjakso_numero.y) %>%
+    # Drop useless columns
+    select(-c(crossage_penalty, shjakso_numero.x)) %>%
+    ungroup()
+
+rm(nonmatched_transf, nonmatched_diag)
+
+# With our current data, we don't
+# get any extra rows from checking against
+# NA shjakso_num within the target table
+# here, but it's good to have this here if
+# things (data) change in the future.
+diag_transf_whole <- bind_rows(diag_transf_fix, rematch) 
+
+n_distinct(diag_transf_whole$help_y) / n_distinct(transf$help_y) # unit coverage 96.26%
+n_distinct(diag_transf_whole$henkilotunnus) / n_distinct(transf$henkilotunnus) # patient coverage 99.48%
+
+rm(diag_flat)
+```
+
+### Auxiliary table 1: apotti_toimenpide
+
+The cleanest join happens right here, after we've combined `diag` and `transf`. 
+
+```{r}
+toim_tg <- readRDS("./results/data/apotti_toimenpide.rds") %>%
+  filter(henkilotunnus %in% IDs)
+
+filter_out <- c(grep("rön", unique(toim_tg$toimenpide_selite), value = T),
+                grep("TT", unique(toim_tg$toimenpide_selite), value = T),
+                grep("EKG", unique(toim_tg$toimenpide_selite), value = T),
+                grep("kanyl", unique(toim_tg$toimenpide_selite), value = T),
+                grep("UÄ", unique(toim_tg$toimenpide_selite), value = T),
+                grep("puud", unique(toim_tg$toimenpide_selite), value = T),
+                grep("anest", unique(toim_tg$toimenpide_selite), value = T),
+                grep("per tunti", unique(toim_tg$toimenpide_selite), value = T),
+                grep("tutkimus", unique(toim_tg$toimenpide_selite), value = T),
+                grep("kuvaus", unique(toim_tg$toimenpide_selite), value = T),
+                "FYSIOTERAPIA",
+                "Yleisanestesia",
+                "TOIMINTATERAPIA",
+                "Lääkkeenanto")
+
+toimenpide_order <- c("Verensiirto", "Tehohoito", "Tehovalvonta", "Valvontatasoinen hoito", "Hengityksen ja verenkierron valvonta", "Elintoimintojen valvonta ilman anestesiaa", "Hemodialyysi", "MARS-DIALYYSIHOITO")
+
+toim_filtered <- toim_tg %>%
+  filter(!(toimenpide_selite %in% filter_out))
+
+diag_transf_toim <- diag_transf_whole %>%
+  left_join(toim_filtered, by = c("henkilotunnus", "palvelutuote_numero")) %>%
+  mutate(veri_toim_jalkeen_tuntia = difftime(veri_alku_aika, toimenpide_hetki, units = "hours")) %>%
+  group_by(help_y) %>%
+  slice_min(order_by = abs(veri_toim_jalkeen_tuntia)) %>%
+  slice_max(order_by = paatoimenpide) %>%
+  mutate(importance = match(toimenpide_selite, toimenpide_order, nomatch = 0)) %>%
+  arrange(desc(importance), .by_group = TRUE) %>%
+  filter(row_number() == 1 | all(importance == 0)) %>%
+  # even though there are still thousands of dupes, I can't make it
+  # work without comprehensive importance map and we don't have time
+  # for that now, so this'll have to do.
+  slice(1) %>% 
+  ungroup()
+
+rm(toim_tg, toim_filtered, diag_transf, diag_transf_whole)
+```
+
+# oper + transf
+
+```{r}
+oper_tg <- readRDS("./results/data/apotti_operaatiot.rds") %>%
+  filter(henkilotunnus %in% IDs)
+oper_tg_filtered <- oper_tg %>%
+  filter(!is.na(potilas_salista)) %>%
+  filter(!is.na(pot_eala_koodi))
+
+## Map missing sydanasema operation labels.
+## Map created in "sydanasema_primary_procedures.qmd"
+# Load map
+sydan_map <- readRDS("./results/data/sydan_proc_primaries_map.rds") %>%
+  ungroup() %>% # I accidentally left it grouped when saving...
+  select(henkilotunnus, toimenpide_koodi, toimenpide_selite, toimenpide_lisakoodit, toimenpide_hetki) %>%
+  mutate(toimenpide_date = date(toimenpide_hetki)) %>%
+  select(-toimenpide_hetki)
+
+oper_transf_tmp <- oper_tg_filtered %>%
+  left_join(transf, by = c("henkilotunnus")) %>%
+  mutate(veri_operaation_alusta_tuntia = difftime(veri_alku_aika, potilas_saliin, units = "hours")) %>%
+  filter(veri_operaation_alusta_tuntia >= -6) %>% # we allow for preop transfusions max 6 hrs before
+  filter(veri_operaation_alusta_tuntia <= 174) %>% # we allow for postop transfusions max week + 6 hrs after
+  group_by(help_y) %>%
+  slice_min(order_by = abs(veri_operaation_alusta_tuntia)) %>%
+  slice(1) %>% # after the previous, 7 duplicates remain, force unique blindly
+  ungroup() %>%
+  mutate(sali_date = date(potilas_saliin),
+         veri_date = date(veri_alku_aika))
+
+oper_label_na <- oper_transf_tmp %>%
+  filter(is.na(paatoimenpide_selite) & !is.na(operaatio_tunnus)) # nrow 486
+
+# How many people exist in the intersection of sydan_map and oper_label_na?
+sydan_crossmatch <- oper_transf_tmp %>%
+  filter(henkilotunnus %in% unique(sydan_map$henkilotunnus))
+
+# Join by henkilotunnus and sali_date
+sydan_imputed <- oper_label_na %>%
+  left_join(sydan_map, by = c("henkilotunnus", "sali_date" = "toimenpide_date"), relationship = "many-to-one", multiple = "any") %>%
+  mutate(paatoimenpide_selite = ifelse(is.na(paatoimenpide_selite), 
+                                       toimenpide_selite,
+                                       paatoimenpide_selite),
+         paatoimenpide_koodi = ifelse(is.na(paatoimenpide_koodi),
+                                      toimenpide_koodi,
+                                      paatoimenpide_koodi),
+         paatoimenpide_lisakoodit = ifelse(is.na(paatoimenpide_lisakoodit),
+                                                 toimenpide_lisakoodit,
+                                                 paatoimenpide_lisakoodit)) %>%
+  select(-c(sali_date, veri_date, toimenpide_selite, toimenpide_koodi, toimenpide_lisakoodit))
+
+# Replace oper_label_na objects from the original table with
+# sydan_imputed
+oper_transf <- oper_transf_tmp %>%
+  filter(!(is.na(paatoimenpide_selite) & !is.na(operaatio_tunnus))) %>%
+  select(-c(veri_date, sali_date)) %>%
+  rbind(sydan_imputed)
+
+# With this, we get 91.8% of coverage of the missing procedure labels!
+
+n_distinct(oper_transf$help_y) / n_distinct(transf$help_y) # unit coverage: 43.3%
+n_distinct(oper_transf$henkilotunnus) / n_distinct(transf$henkilotunnus) # patient coverage 53.6% 
+```
+
+Elissa wrote some code to include some missing data (which results in more operation matches!)
+Her code in the next chunk.
+
+```{r}
+### Including data from apotti_operaatio_toimenpiteet ###
+# Get transfusions without operation codes
+no_oper <- transf %>%
+    filter(!(help_y %in% oper_transf$help_y[!is.na(oper_transf$paatoimenpide_koodi)]))
+
+dim(no_oper) # 62 226 such transfusions
+
+# Load new operation data
+optoim <- readRDS("./results/data/apotti_operaatio_toimenpiteet.rds")
+
+# Join apotti_operaatiot and apotti_operaatio_toimenpiteet by common columns, i.e. henkilotunnus and operaatio_tunnus
+oper_tg_complemented <- oper_tg %>%
+   left_join(optoim, by = intersect(names(oper_tg), names(optoim))) %>%
+   filter(!is.na(paatoimenpide_koodi) | !is.na(toimenpide_koodi)) %>%
+   mutate(paatoimenpide_koodi = ifelse(
+                                   is.na(paatoimenpide_koodi), 
+                                   toimenpide_koodi, 
+                                   paatoimenpide_koodi
+                                   ),
+          paatoimenpide_selite = ifelse(
+                                   is.na(paatoimenpide_selite),
+                                   toimenpide_selite,
+                                   paatoimenpide_selite
+          )
+   ) %>%
+   distinct()
+
+# Filter out irrelevant procedures
+filter_out <- c(grep("rön", unique(oper_tg_complemented$paatoimenpide_selite), value = T),
+                grep("TT", unique(oper_tg_complemented$paatoimenpide_selite), value = T),
+                grep("EKG", unique(oper_tg_complemented$paatoimenpide_selite), value = T),
+                grep("kanyl", unique(oper_tg_complemented$paatoimenpide_selite), value = T),
+                grep("UÄ", unique(oper_tg_complemented$paatoimenpide_selite), value = T),
+                grep("puud", unique(oper_tg_complemented$paatoimenpide_selite), value = T),
+                grep("anest", unique(oper_tg_complemented$paatoimenpide_selite), value = T),
+                grep("per tunti", unique(oper_tg_complemented$paatoimenpide_selite), value = T),
+                grep("tutkimus", unique(oper_tg_complemented$paatoimenpide_selite), value = T),
+                grep("kuvaus", unique(oper_tg_complemented$paatoimenpide_selite), value = T),
+                grep("sähköshokki", unique(oper_tg_complemented$paatoimenpide_selite), value = T),
+                "FYSIOTERAPIA",
+                "Yleisanestesia",
+                "TOIMINTATERAPIA",
+                "Lääkkeenanto")
+
+oper_complemented_filt <- oper_tg_complemented %>%
+    filter(!(paatoimenpide_selite %in% filter_out))
+
+# Join to complemented operation table
+no_oper_map <- oper_complemented_filt %>%
+  left_join(no_oper, by = "henkilotunnus") %>%
+  mutate(veri_operaation_alusta_tuntia = difftime(veri_alku_aika, potilas_saliin, units = "hours")) %>%
+  filter(veri_operaation_alusta_tuntia >= -6) %>% # we allow for preop transfusions max 6 hrs before
+  filter(veri_operaation_alusta_tuntia <= 174) %>% # we allow for postop transfusions max week + 6 hrs after
+  group_by(help_y) %>%
+  slice_min(order_by = abs(veri_operaation_alusta_tuntia)) #%>%
+
+# Intervention check
+dim(no_oper_map) # 4 210 rows
+n_distinct(no_oper_map$help_y) # 4 080 distinct help_y's
+
+# There are some duplicates -> Let's select the ones with operation done in endoscopy over the endoscopy itself:
+endosc_out <- grep("tähystys", unique(oper_tg_complemented$paatoimenpide_selite), value = T)
+
+no_oper_map_dupes <- no_oper_map %>%
+    group_by(help_y) %>% 
+    filter(n() > 1) %>%
+    ungroup() %>%
+    filter(!(paatoimenpide_selite %in% endosc_out)) %>%
+    # After this 11 duplicates -> Force unique blindly
+    group_by(help_y) %>%
+    slice(1) %>%
+    ungroup()
+
+dim(no_oper_map_dupes) # 100
+n_distinct(no_oper_map_dupes$help_y) # 100
+
+# Join all new operations to oper_transf
+no_oper_map_unique <- no_oper_map %>%
+    group_by(help_y) %>%
+    filter(n() <= 1)
+
+no_oper_map_complete <- bind_rows(no_oper_map_unique, no_oper_map_dupes) %>%
+    select(-setdiff(names(no_oper_map_unique), names(oper_transf)))
+
+dim(no_oper_map_complete) # 4 060
+n_distinct(no_oper_map_complete$help_y) # 4 060 new 
+
+# sort(table(no_oper_map_complete$paatoimenpide_selite))
+# Mainly ensdoscopy operations
+
+oper_transf_complete <- bind_rows(oper_transf, no_oper_map_complete)
+
+# Elissa's fix for dupes created above
+oper_transf_complete_new <- oper_transf_complete %>%
+    group_by(help_y) %>%
+    slice_min(order_by = abs(veri_operaation_alusta_tuntia)) %>%
+    mutate(NA_mainproc = ifelse(is.na(paatoimenpide_koodi), 1, 0)) %>%
+    slice_min(order_by = NA_mainproc) %>%
+    ungroup
+```
+
+## full_join(diag_transf, oper_transf)
+
+```{r}
+# In this special case we need to drop 'shjakso_numero' from 
+# transf_colnames because we did some forcing hijinks earlier.
+# If we don't drop it, we will create duplicates, because
+# oper_transf contains units without shjakso_numero and
+# diag_transf_toim contains those same units WITH shjakso_numero
+colnames_wo_shjakso <- transf_colnames[-28]
+
+fj_diag_oper <- full_join(diag_transf_toim, oper_transf_complete_new, by = colnames_wo_shjakso) %>%
+    mutate(shjakso_numero = ifelse(is.na(shjakso_numero.x), shjakso_numero.y, shjakso_numero.x)) %>%
+    select(-c(shjakso_numero.x, shjakso_numero.y))
+
+rm(diag_transf_toim, oper_transf, sydan_imputed, sydan_map, oper_transf_tmp, oper_label_na, sydan_crossmatch)
+```
+
+# oh + transf
+
+```{r}
+oh_tg <- readRDS("./results/data/apotti_osastohoito.rds") %>%
+  filter(henkilotunnus %in% IDs)
+
+oh_transf <- oh_tg %>%
+  left_join(transf, by = c("henkilotunnus", "shjakso_numero")) %>%
+  ## Handle transf where shjakso_num missing
+  # Left join and separate columns w.r.t. to the stricter left_join
+  left_join(transf_wo_shnum, by = c("henkilotunnus"), suffix = c("_strict", "_loose")) %>%
+  # Coalesce _strict and _loose columns (imagine a zipper)
+  mutate(across(ends_with("_strict"), ~ coalesce(.x, get(gsub("_strict", "_loose", cur_column()))))) %>%
+  # Drop _loose (useless now)
+  select(-contains("_loose")) %>%
+  # Rename _strict by dropping "_strict"
+  rename_with(~ gsub("_strict", "", .x), ends_with("_strict")) %>%
+  mutate(veri_oh_alusta_tuntia = difftime(veri_alku_aika, ohjakso_alkuhetki, units = "hours"),
+         veri_oh_lopusta_tuntia = difftime(veri_alku_aika, ohjakso_loppuhetki, units = "hours")) %>%
+  # We prefer matches with neatly contained intervals
+  mutate(crossage_penalty = if_else(veri_loppu_aika > ohjakso_loppuhetki | veri_alku_aika < ohjakso_alkuhetki, 9999, 0)) %>% # super dubious hack
+  filter(ohjakso_alkuhetki - 24*60*60 <= veri_alku_aika & veri_loppu_aika <= ohjakso_loppuhetki + 24*60*60) %>% # we'll allow for 2-tailed 24h buffer
+  group_by(help_y) %>%
+  slice_min(order_by = abs(veri_oh_alusta_tuntia) + crossage_penalty) %>%
+  slice_min(order_by = veri_oh_lopusta_tuntia + crossage_penalty) %>% # we don't take abs here because negative values have primacy
+  slice(1) %>% # 24 dupes left after the above, force unique blindly
+  ungroup() %>%
+  select(-crossage_penalty)
+
+# NB! IMPORTANT! READ THIS!
+# The above breaks one tiny specific thing in our data
+# We have to fix that here because the pipe is otherwise effective
+# and I don't want to redo it.
+# When we match with both strict and loose rules, some rows get matched
+# also with an RBC (loose) when the strict matching is Plasma.
+# Only 5 Plasma units have RhD_unit in the original data,
+# but when we coalesce (arbitrate NAs between strict and loose),
+# we end up imputing strict Plasma match RhD_units with RBC RhD_units.
+# In the resulting diag_transf df we can recognize the original Plas RhD
+# entries by NA veri_ykiskko_res_id, so we'll strip all other RhD_units
+# with !is.na(veri_ykiskko_res_id).
+# Hacky, I know. I'm tired.
+oh_transf_fix <- oh_transf %>%
+    mutate(RhD_unit = ifelse(!is.na(veri_ykiskko_res_id) & product_type == "Plasma" & !is.na(RhD_unit), NA, RhD_unit))
+
+
+n_distinct(oh_transf_fix$help_y) / n_distinct(transf$help_y) # unit coverage: 78.22%
+n_distinct(oh_transf_fix$henkilotunnus) / n_distinct(transf$henkilotunnus) # patient coverage 90.44% 
+```
+
+## full_join(fj_diag_oper, oh_transf)
+
+```{r}
+fj_diag_oper_oh <- full_join(fj_diag_oper, oh_transf_fix, by = transf_colnames)
+
+rm(oh_tg, fj_diag_oper, oh_transf)
+```
+
+# kaynti + transf
+
+```{r}
+kaynti_tg <- readRDS("./results/data/apotti_kaynti.rds") %>%
+  filter(henkilotunnus %in% IDs)
+
+kaynti_tmp <- kaynti_tg %>%
+  mutate(row_completeness = rowSums(!is.na(kaynti_tg))) # needed when filtering dupes
+
+kaynti_transf <- kaynti_tmp %>%
+  left_join(transf, by = c("henkilotunnus", "shjakso_numero")) %>%
+  ## Handle transf where shjakso_num missing
+  # Left join and separate columns w.r.t. to the stricter left_join
+  left_join(transf_wo_shnum, by = c("henkilotunnus"), suffix = c("_strict", "_loose")) %>%
+  # Coalesce _strict and _loose columns (imagine a zipper)
+  mutate(across(ends_with("_strict"), ~ coalesce(.x, get(gsub("_strict", "_loose", cur_column()))))) %>%
+  # Drop _loose (useless now)
+  select(-contains("_loose")) %>%
+  # Rename _strict by dropping "_strict"
+  rename_with(~ gsub("_strict", "", .x), ends_with("_strict")) %>%
+  mutate(veri_kaynti_alusta_tuntia = difftime(veri_alku_aika, alkuhetki, units = "hours"),
+         veri_kaynti_lopusta_tuntia = difftime(veri_alku_aika, loppuhetki, units = "hours")) %>%
+  # We prefer matches with neatly contained intervals
+  mutate(crossage_penalty = if_else(veri_loppu_aika > loppuhetki | veri_alku_aika < alkuhetki, 9999, 0)) %>% # super dubious hack
+  filter(alkuhetki - 24*60*60 <= veri_alku_aika & veri_loppu_aika <= loppuhetki + 24*60*60) %>% # we'll allow for 2-tailed 24h buffer
+  group_by(help_y) %>%
+  slice_min(order_by = abs(veri_kaynti_alusta_tuntia) + crossage_penalty) %>%
+  slice_min(order_by = veri_kaynti_lopusta_tuntia + crossage_penalty) %>% # we don't take abs here because negative values have primacy
+  slice_max(order_by = row_completeness) %>% # there are very many dupes, so first we select the most complete
+  slice(1) %>% # after the above, the remaining duplicates are all imaging / consultation for some reason, so we'll just blindly force uniques
+  ungroup() %>%
+  select(-crossage_penalty)
+
+# NB! IMPORTANT! READ THIS!
+# The above breaks one tiny specific thing in our data
+# We have to fix that here because the pipe is otherwise effective
+# and I don't want to redo it.
+# When we match with both strict and loose rules, some rows get matched
+# also with an RBC (loose) when the strict matching is Plasma.
+# Only 5 Plasma units have RhD_unit in the original data,
+# but when we coalesce (arbitrate NAs between strict and loose),
+# we end up imputing strict Plasma match RhD_units with RBC RhD_units.
+# In the resulting diag_transf df we can recognize the original Plas RhD
+# entries by NA veri_ykiskko_res_id, so we'll strip all other RhD_units
+# with !is.na(veri_ykiskko_res_id).
+# Hacky, I know. I'm tired.
+kaynti_transf_fix <- kaynti_transf %>%
+    mutate(RhD_unit = ifelse(!is.na(veri_ykiskko_res_id) & product_type == "Plasma" & !is.na(RhD_unit), NA, RhD_unit))
+
+n_distinct(kaynti_transf_fix$help_y) / n_distinct(transf$help_y) # unit coverage: 49.44%
+n_distinct(kaynti_transf_fix$henkilotunnus) / n_distinct(transf$henkilotunnus) # patient coverage 56.44% 
+```
+
+## full_join(fj_diag_oper_oh, kaynti_transf)
+
+```{r}
+master_intermediate <- full_join(fj_diag_oper_oh, kaynti_transf_fix, by = colnames_wo_shjakso) %>%
+    mutate(shjakso_numero = ifelse(is.na(shjakso_numero.x), shjakso_numero.y, shjakso_numero.x)) %>%
+    select(-c(shjakso_numero.x, shjakso_numero.y))
+  
+# save to continue later
+saveRDS(master_intermediate, "./results/data/master_intermediate_new.rds")
+
+rm(fj_diag_oper_oh, kaynti_transf, kaynti_tg, kaynti_tmp, master_intermediate)
+```
+
+```{r}
+masterim <- readRDS("./results/data/master_intermediate_new.rds")
+```
+
+# Defining transfusion episode
+
+(Originally Elissa's code in [master_Labs_and_bleeding.qmd](master_Labs_and_bleeding.qmd).)
+
+In order to calculate statistics, map lab results and bleeding data to transfusion events, we need to define on what basis transfusions of an individual belong to the same episode.
+
+Since our data does not have a clear grouping variable to distinguish between episodes, we define transfusion episode in the following way:
+
+    **Transfusion episode**: Transfusions of the same individual, ordered by the transfusion start time, belong to the same episode if the time difference between the end time of the current transfusion and start time of the leading transfusion is less than or equal to 3 hours.
+
+Since our data exhibits anomalies, to ensure reasonable duration for the transfusion episodes, the end times of transfusions are imputated to be start time + 6 hours in the cases where the duration of transfusion is more than 6 hours. Additonally, since some transfusion end times are missing, these are imputated to be transfusion start + mean duration of transfusion (calculated from the data).
+
+```{r}
+# Common variables
+hour <- 60*60
+transfusion_max_duration_h <- 6
+episode_cutoff_h <- 3
+```
+
+```{r}
+# Group transfusions to episodes
+masterim_transf_episodes <- masterim %>%
+    # Define the transfusion episodes
+    group_by(henkilotunnus) %>%
+    arrange(henkilotunnus, veri_alku_aika) %>%
+        # Within each ID, group transfusions to episodes if they overlap or have less than 3 hour time difference
+        mutate(transfusion_episode = cumsum(
+            veri_alku_aika > lag(veri_loppu_aika) + episode_cutoff_h*hour | 
+            is.na(lag(veri_loppu_aika))
+        )) %>%
+
+    # Define the start and end time of transfusion episodes
+    group_by(henkilotunnus, transfusion_episode) %>%
+    arrange(henkilotunnus, transfusion_episode, veri_alku_aika) %>%
+    mutate(
+        episode_start = first(veri_alku_aika),
+        episode_end = last(veri_loppu_aika)
+    ) %>%
+    ungroup() %>%
+
+    # Define unique identifier to transfusion episodes
+    mutate(transfusion_episode_num = paste0(henkilotunnus, "_", episode_start, "_", episode_end))
+
+nrow(masterim_transf_episodes) # 109 518
+```
+
+# Labs
+
+```{r}
+# Common variables
+lab_pretransf_limit_h <- 5*24
+lab_posttransf_limit_h <- 48
+```
+
+## Pre and post-transfusion Hb measurement
+
+Read laboratory data for Hb (and Thrombocytes):
+
+```{r}
+if (!file.exists("./results/data/multilab_timelimit_Hb_Trom_transf_ID.rds")) {
+    # Labs
+    labs <- c("B -Hb", "B -Trom")
+    # Read the lab data
+    multilab1 <- readRDS("./results/data/multilab_labrat_aikaraja_1.rds")
+    multilab1 <- multilab1 %>% 
+        filter(tutkimus_lyhenne %in% labs & henkilotunnus %in% IDs)
+
+    multilab2 <- readRDS("./results/data/multilab_labrat_aikaraja_2.rds")
+    multilab2 <- multilab2 %>% 
+        filter(tutkimus_lyhenne %in% labs & henkilotunnus %in% IDs)
+
+    multilab_timelimit <- bind_rows(multilab1, multilab2)
+
+    rm(multilab1)
+    rm(multilab2)
+
+    names(multilab_timelimit)
+
+    # Filter further
+    multilab_timelimit <- multilab_timelimit %>%
+        mutate(tulos = as.numeric(tulos)) %>%
+        filter(!is.na(tulos)) %>%
+        select(henkilotunnus, tutkimus_lyhenne, naytteenottoaika, tulos, yksikko)
+    # Gives a warning 'NAs introduced by coercion' due to some 'tulos' being 'pyydetty' etc.
+    # These are set as NA.
+    saveRDS(multilab_timelimit, "./results/data/multilab_timelimit_Hb_Trom_transf_ID.rds")
+} else {
+    multilab_timelimit <- readRDS("./results/data/multilab_timelimit_Hb_Trom_transf_ID.rds")
+}
+
+# Ensure one result per ID, timestamp, test: Take the average if multiple
+multilab_timelimit_filtered <- multilab_timelimit %>%
+    group_by(henkilotunnus, naytteenottoaika, tutkimus_lyhenne) %>%
+    mutate(
+        tulos = mean(tulos)
+    ) %>%
+    ungroup() %>%
+    distinct()
+```
+
+```{r}
+# Get Hb measurements & RBC transfusions
+Hb_data <- multilab_timelimit_filtered %>% 
+    filter(tutkimus_lyhenne =="B -Hb")
+masterim_RBC <- masterim_transf_episodes %>%
+    filter(product_type == "RBC")
+```
+
+Pre-transfusion Hb:
+
+```{r}
+# No buffer
+pretransf_Hb <- masterim_RBC %>%
+    left_join(Hb_data, by = "henkilotunnus", relationship = "many-to-many") %>%
+    filter(naytteenottoaika <= veri_alku_aika) %>%
+    group_by(help_y) %>%
+    filter(naytteenottoaika == max(naytteenottoaika, na.rm = TRUE)) %>%
+    filter(naytteenottoaika >= (veri_alku_aika - lab_pretransf_limit_h*hour)) %>%
+    distinct()
+
+nrow(pretransf_Hb) # 64k
+nrow(pretransf_Hb) == n_distinct(pretransf_Hb$help_y) # TRUE
+
+# 1 hour buffer (Considering such measurements that may have affected to the transfusion decision)
+pretransf_Hb_1h_buff <- masterim_RBC %>%
+    left_join(Hb_data, by = "henkilotunnus", relationship = "many-to-many") %>%
+    filter(naytteenottoaika <= veri_alku_aika - hour) %>%
+    group_by(help_y) %>%
+    filter(naytteenottoaika == max(naytteenottoaika, na.rm = TRUE)) %>%
+    filter(naytteenottoaika >= (veri_alku_aika - lab_pretransf_limit_h*hour)) %>%
+    distinct()
+
+nrow(pretransf_Hb_1h_buff) # 63.7k
+nrow(pretransf_Hb_1h_buff) == n_distinct(pretransf_Hb_1h_buff$help_y) # TRUE
+```
+
+Post-transfusion Hb:
+
+```{r}
+# After transfusion episode
+posttransf_Hb <- masterim_RBC %>%
+    left_join(Hb_data, by = "henkilotunnus", relationship = "many-to-many") %>%
+    filter(
+        naytteenottoaika >= episode_end
+    ) %>%
+    group_by(help_y) %>%
+    filter(naytteenottoaika == min(naytteenottoaika)) %>%
+    filter(naytteenottoaika <= (episode_end + lab_posttransf_limit_h*hour))
+
+nrow(posttransf_Hb) # 59k
+nrow(posttransf_Hb) == n_distinct(posttransf_Hb$help_y) # TRUE
+
+# Instantly after transfusion
+posttransf_Hb_instant <- masterim_RBC %>%
+    left_join(Hb_data, by = "henkilotunnus", relationship = "many-to-many") %>%
+    filter(
+        naytteenottoaika >= veri_loppu_aika
+    ) %>%
+    group_by(help_y) %>%
+    filter(naytteenottoaika == min(naytteenottoaika)) %>%
+    filter(naytteenottoaika <= (veri_loppu_aika + lab_posttransf_limit_h*hour))
+
+nrow(posttransf_Hb_instant) # 60k
+nrow(posttransf_Hb_instant) == n_distinct(posttransf_Hb_instant$help_y) # TRUE
+```
+
+Left join Hb measurements to master:
+
+```{r}
+# Rename columns
+pretransf_names = c(pretransf_Hb_time = "naytteenottoaika", pretransf_Hb = "tulos")
+pretransf_1h_buff_names = c(pretransf_Hb_1h_buff_time = "naytteenottoaika", 
+                            pretransf_Hb_1h_buff = "tulos")
+posttransf_names = c(posttransf_Hb_time = "naytteenottoaika", posttransf_Hb = "tulos")
+posttransf_instant_names = c(posttransf_Hb_instant_time = "naytteenottoaika", 
+                            posttransf_Hb_instant = "tulos")
+
+pretransf_Hb <- pretransf_Hb %>%
+    rename(all_of(pretransf_names)) %>%
+    select(c(henkilotunnus, help_y, pretransf_Hb_time, pretransf_Hb))
+
+pretransf_Hb_1h_buff <- pretransf_Hb_1h_buff %>%
+    rename(all_of(pretransf_1h_buff_names)) %>%
+    select(c(henkilotunnus, help_y, pretransf_Hb_1h_buff_time, pretransf_Hb_1h_buff))
+
+posttransf_Hb <- posttransf_Hb %>% 
+    rename(all_of(posttransf_names)) %>%
+    select(c(henkilotunnus, help_y, posttransf_Hb_time, posttransf_Hb))
+
+posttransf_Hb_instant <- posttransf_Hb_instant %>% 
+    rename(all_of(posttransf_instant_names)) %>%
+    select(c(henkilotunnus, help_y, posttransf_Hb_instant_time, posttransf_Hb_instant))
+
+# Join
+masterim_Hb <- masterim_transf_episodes %>%
+    left_join(pretransf_Hb, by = c("henkilotunnus", "help_y")) %>%
+    left_join(pretransf_Hb_1h_buff, by = c("henkilotunnus", "help_y")) %>%
+    left_join(posttransf_Hb, by = c("henkilotunnus", "help_y")) %>%
+    left_join(posttransf_Hb_instant, by = c("henkilotunnus", "help_y"))
+
+nrow(masterim_Hb) # 109 516
+
+rm(pretransf_Hb, pretransf_Hb_1h_buff, posttransf_Hb, posttransf_Hb_instant, masterim_RBC, Hb_data)
+```
+
+## Pre and post-transfusion Thrombocyte measurement
+
+Read the data:
+
+```{r}
+# Thrombocyte measurements and Platelet transfusions
+Trom_data <- multilab_timelimit_filtered %>% 
+    filter(tutkimus_lyhenne =="B -Trom")
+masterim_platelets <- masterim_transf_episodes %>%
+    filter(product_type == "Platelets")
+```
+
+Pre-transfusion Thrombocytes:
+
+```{r}
+# No buffer
+pretransf_Trom <- masterim_platelets %>%
+    left_join(Trom_data, by="henkilotunnus", relationship="many-to-many") %>%
+    filter(naytteenottoaika <= veri_alku_aika) %>%
+    group_by(help_y) %>%
+    filter(naytteenottoaika == max(naytteenottoaika, na.rm = TRUE)) %>%
+    filter(naytteenottoaika >= (veri_alku_aika - lab_pretransf_limit_h*hour)) %>%
+    distinct()
+
+nrow(pretransf_Trom) # 9.7k
+nrow(pretransf_Trom) == n_distinct(pretransf_Trom$help_y) # TRUE
+
+# 1 hour buffer (Considering such measurements that may have affected to the transfusion decision)
+pretransf_Trom_1h_buff <- masterim_platelets %>%
+    left_join(Trom_data, by = "henkilotunnus", relationship = "many-to-many") %>%
+    filter(naytteenottoaika <= veri_alku_aika - hour) %>%
+    group_by(help_y) %>%
+    filter(naytteenottoaika == max(naytteenottoaika, na.rm = TRUE)) %>%
+    filter(naytteenottoaika >= (veri_alku_aika - lab_pretransf_limit_h*hour)) %>%
+    distinct()
+
+nrow(pretransf_Trom_1h_buff) # 9.6k
+nrow(pretransf_Trom_1h_buff) == n_distinct(pretransf_Trom_1h_buff$help_y) # TRUE
+```
+
+Post-transfusion Thrombocytes:
+
+```{r}
+# After transfusion episode
+posttransf_Trom <- masterim_platelets %>%
+    left_join(Trom_data, by = "henkilotunnus", relationship = "many-to-many") %>%
+    filter(
+        naytteenottoaika >= episode_end
+    ) %>%
+    group_by(help_y) %>%
+    filter(naytteenottoaika == min(naytteenottoaika)) %>%
+    filter(naytteenottoaika <= (episode_end + lab_posttransf_limit_h*hour))
+
+nrow(posttransf_Trom) # 8k
+nrow(posttransf_Trom) == n_distinct(posttransf_Trom$help_y) # TRUE
+
+# Instantly after transfusion
+posttransf_Trom_instant <- masterim_platelets %>%
+    left_join(Trom_data, by = "henkilotunnus", relationship = "many-to-many") %>%
+    filter(
+        naytteenottoaika >= veri_loppu_aika
+    ) %>%
+    group_by(help_y) %>%
+    filter(naytteenottoaika == min(naytteenottoaika)) %>%
+    filter(naytteenottoaika <= (veri_loppu_aika + lab_posttransf_limit_h*hour))
+
+nrow(posttransf_Trom_instant) # 8.1k
+nrow(posttransf_Trom_instant) == n_distinct(posttransf_Trom_instant$help_y) # TRUE
+
+```
+
+Left join Thrombocyte measurements to master:
+
+```{r}
+# Rename columns
+pretransf_names_Trom = c(pretransf_Trom_time = "naytteenottoaika", pretransf_Trom = "tulos")
+pretransf_1h_buff_names_Trom = c(pretransf_Trom_1h_buff_time = "naytteenottoaika", 
+                                pretransf_Trom_1h_buff = "tulos")
+posttransf_names_Trom = c(posttransf_Trom_time = "naytteenottoaika", posttransf_Trom = "tulos")
+posttransf_instant_names_Trom = c(posttransf_Trom_instant_time = "naytteenottoaika", 
+                                posttransf_Trom_instant = "tulos")
+
+pretransf_Trom <- pretransf_Trom %>%
+    rename(all_of(pretransf_names_Trom)) %>%
+    select(c(henkilotunnus, help_y, pretransf_Trom_time, pretransf_Trom))
+
+pretransf_Trom_1h_buff <- pretransf_Trom_1h_buff %>%
+    rename(all_of(pretransf_1h_buff_names_Trom)) %>%
+    select(c(henkilotunnus, help_y, pretransf_Trom_1h_buff_time, pretransf_Trom_1h_buff))
+
+posttransf_Trom <- posttransf_Trom %>% 
+    rename(all_of(posttransf_names_Trom)) %>%
+    select(c(henkilotunnus, help_y, posttransf_Trom_time, posttransf_Trom))
+
+posttransf_Trom_instant <- posttransf_Trom_instant %>% 
+    rename(all_of(posttransf_instant_names_Trom)) %>%
+    select(c(henkilotunnus, help_y, posttransf_Trom_instant_time, posttransf_Trom_instant))
+
+# Join
+masterim_Trom <- masterim_Hb %>%
+    left_join(pretransf_Trom, by = c("henkilotunnus", "help_y")) %>%
+    left_join(pretransf_Trom_1h_buff, by = c("henkilotunnus", "help_y")) %>%
+    left_join(posttransf_Trom, by = c("henkilotunnus", "help_y")) %>%
+    left_join(posttransf_Trom_instant, by = c("henkilotunnus", "help_y"))
+
+nrow(masterim_Trom) # 109 516
+
+rm(masterim_Hb, pretransf_Trom, pretransf_Trom_1h_buff, posttransf_Trom, posttransf_Trom_instant)
+```
+
+## Pre and post-transfusion INR measurement
+
+Read the data:
+
+```{r}
+tt_inr_complete <- readRDS("./results/data/multilab_INR_TT_imputated_long.rds") 
+
+INR_data <- tt_inr_complete %>%
+    filter(henkilotunnus %in% IDs) %>%
+    select(-P_TT) %>%
+    rename(tulos = P_INR)
+
+rm(tt_inr_complete)
+
+masterim_plasma <- masterim_transf_episodes %>%
+    filter(product_type == "Plasma")
+```
+
+Pre-transfusion INR:
+
+```{r}
+# No buffer
+pretransf_INR <- masterim_plasma %>%
+    left_join(INR_data, by="henkilotunnus", relationship="many-to-many") %>%
+    filter(naytteenottoaika <= veri_alku_aika) %>%
+    group_by(help_y) %>%
+    filter(naytteenottoaika == max(naytteenottoaika, na.rm = TRUE)) %>%
+    filter(naytteenottoaika >= (veri_alku_aika - lab_pretransf_limit_h*hour)) %>%
+    distinct()
+
+nrow(pretransf_INR) # 15k
+nrow(pretransf_INR) == n_distinct(pretransf_INR$help_y) # TRUE
+
+# 1 hour buffer (Considering such measurements that may have affected to the transfusion decision)
+pretransf_INR_1h_buff <- masterim_plasma %>%
+    left_join(INR_data, by = "henkilotunnus", relationship = "many-to-many") %>%
+    filter(naytteenottoaika <= veri_alku_aika - hour) %>%
+    group_by(help_y) %>%
+    filter(naytteenottoaika == max(naytteenottoaika, na.rm = TRUE)) %>%
+    filter(naytteenottoaika >= (veri_alku_aika - lab_pretransf_limit_h*hour)) %>%
+    distinct()
+
+nrow(pretransf_INR_1h_buff) # 14.7k
+nrow(pretransf_INR_1h_buff) == n_distinct(pretransf_INR_1h_buff$help_y) # TRUE
+```
+
+Post-transfusion INR:
+
+```{r}
+# After transfusion episode
+posttransf_INR <- masterim_plasma %>%
+    left_join(INR_data, by = "henkilotunnus", relationship = "many-to-many") %>%
+    filter(
+        naytteenottoaika >= episode_end
+    ) %>%
+    group_by(help_y) %>%
+    filter(naytteenottoaika == min(naytteenottoaika)) %>%
+    filter(naytteenottoaika <= (episode_end + lab_posttransf_limit_h*hour))
+
+nrow(posttransf_INR) # 11.5k
+nrow(posttransf_INR) == n_distinct(posttransf_INR$help_y) # TRUE
+
+# Instant posttransf INR
+posttransf_INR_instant <- masterim_plasma %>%
+    left_join(INR_data, by = "henkilotunnus", relationship = "many-to-many") %>%
+    filter(
+        naytteenottoaika >= veri_loppu_aika
+    ) %>%
+    group_by(help_y) %>%
+    filter(naytteenottoaika == min(naytteenottoaika)) %>%
+    filter(naytteenottoaika <= (veri_loppu_aika + lab_posttransf_limit_h*hour))
+
+nrow(posttransf_INR_instant) # 11.8k
+nrow(posttransf_INR_instant) == n_distinct(posttransf_INR_instant$help_y) # TRUE
+
+```
+
+Left join INR measurements to master:
+
+```{r}
+# Rename columns
+pretransf_names_INR = c(pretransf_INR_time = "naytteenottoaika", pretransf_INR = "tulos", 
+                        pretransf_INR_imputated = "imputated_INR")
+pretransf_1h_buff_names_INR = c(pretransf_INR_1h_buff_time = "naytteenottoaika", 
+                                pretransf_INR_1h_buff = "tulos", 
+                                pretransf_INR_1h_buff_imputated = "imputated_INR")
+posttransf_names_INR = c(posttransf_INR_time = "naytteenottoaika", posttransf_INR = "tulos", 
+                        posttransf_INR_imputated = "imputated_INR")
+posttransf_instant_names_INR = c(posttransf_INR_instant_time = "naytteenottoaika", 
+                                posttransf_INR_instant = "tulos",   
+                                posttransf_INR_instant_imputated = "imputated_INR")
+
+pretransf_INR <- pretransf_INR %>%
+    rename(all_of(pretransf_names_INR)) %>%
+    select(c(henkilotunnus, help_y, pretransf_INR_time, pretransf_INR, pretransf_INR_imputated))
+
+pretransf_INR_1h_buff <- pretransf_INR_1h_buff %>%
+    rename(all_of(pretransf_1h_buff_names_INR)) %>%
+    select(c(henkilotunnus, help_y, pretransf_INR_1h_buff_time, pretransf_INR_1h_buff, pretransf_INR_1h_buff_imputated))
+
+posttransf_INR <- posttransf_INR %>% 
+    rename(all_of(posttransf_names_INR)) %>%
+    select(c(henkilotunnus, help_y, posttransf_INR_time, posttransf_INR, posttransf_INR_imputated))
+
+posttransf_INR_instant <- posttransf_INR_instant %>% 
+    rename(all_of(posttransf_instant_names_INR)) %>%
+    select(c(henkilotunnus, help_y, posttransf_INR_instant_time, posttransf_INR_instant, posttransf_INR_instant_imputated))
+
+# Join
+masterim_with_labs <- masterim_Trom %>%
+    left_join(pretransf_INR, by = c("henkilotunnus", "help_y")) %>%
+    left_join(pretransf_INR_1h_buff, by = c("henkilotunnus", "help_y")) %>%
+    left_join(posttransf_INR, by = c("henkilotunnus", "help_y")) %>%
+    left_join(posttransf_INR_instant, by = c("henkilotunnus", "help_y"))
+
+nrow(masterim_with_labs) # 109 516
+n_distinct(masterim_with_labs$help_y) # 109 516
+
+rm(masterim_Trom, masterim_plasma, pretransf_INR, pretransf_INR_1h_buff, posttransf_INR, posttransf_INR_instant)
+rm(INR_data, Trom_data)
+```
+
+# Bleeding data
+
+Bleeding data is mapped to 
+    1) Transfusion episode
+    2) Operation
+
+In both cases, "pre" bleeding refers to cumulative bleeding within 24 hours before the start of episode/operation.
+In both cases, "intra" bleeding refers to cumulative bleeding within the episode/operation.
+For episodes, "post" is defined as cumulative bleeding within 24 hours after the end of the episode.
+For operations, "post" is cumulative bleeding within 5 days after the operation end, and additionally there are separate variables for cumulative bleeding on each of the 5 days.
+
+Above holds only if there are no other episodes/operations within the range.
+If there are/is, then "post" is defined as the bleeding up until the next episode/operation start.
+"Pre" is defined as the bleeding from the end of the previous episode's/operation's "post" bleeding range, up until the start of the episode.
+
+```{r}
+# Variables
+pretransf_interval <- 24*hour
+posttransf_interval_transf <- 24*hour
+posttransf_interval_proc <- 5*24*hour
+```
+
+Load, filter and rename data:
+
+```{r}
+# PART 1
+surgery_bleeds <- readRDS("./results/data/leikkausvuodot_seurantalomake.rds")
+
+bleeds_filtered <- surgery_bleeds %>%
+    mutate(
+        arvo = as.numeric(arvo),
+        yksikko = ifelse(yksikko == "mL", "ml", yksikko)
+    ) %>%
+    filter(henkilotunnus %in% IDs & !is.na(arvo)) %>%
+    select(-c(min_sallittu_arvo, max_sallittu_arvo, min_varoitus_arvo, 
+                max_varoitus_arvo, voi_piirtaa_kuvaajan))
+
+rm(surgery_bleeds)
+
+# Rename
+bleeds_names = c(blood_loss_amount = "arvo",
+                blood_loss_unit = "yksikko",
+                blood_loss_time = "mittaus_aika")
+
+bleeds_filtered <- bleeds_filtered %>%
+    rename(all_of(bleeds_names))
+```
+
+Define limits for calculating blood loss:
+
+```{r}
+# PART 2
+# Transfusion episode blood loss
+master_mod <- masterim_with_labs %>% 
+    filter(henkilotunnus %in% unique(bleeds_filtered$henkilotunnus))   %>%
+    select(henkilotunnus, episode_start, episode_end, transfusion_episode_num) %>%
+    distinct() %>%
+    # Define the pretransf and posttransf limits for each episode by pretransf_interval and posttransf_interval
+    # (unless there exist another transfusion episode within the interval)
+    group_by(henkilotunnus) %>%
+    arrange(henkilotunnus, episode_start) %>%
+    mutate(
+        # Prioritizing complete posttransf_limit for all episodes
+        ## Take maximum of 24 hours before episode start vs the end of previous episode's post-bleeding range
+        ## Then ensure by taking minimum that the bleeding range does not start after episode start.
+        ## NB! Above not true since 8.7.2024
+        pretransf_limit = pmin(
+            pmax(
+                lag(episode_end),
+                episode_start - pretransf_interval,
+                na.rm = TRUE
+            ),
+            episode_start
+        ),
+        ## Similar idea here, but max and min reversed since we consider post-bleeding
+        posttransf_limit = pmax(pmin(lead(episode_start), episode_end+posttransf_interval_transf, 
+                            na.rm=TRUE), episode_end),
+        tdiff_to_prev_transf_more_than_posttransf_interval = difftime(pretransf_limit, lag(posttransf_limit)) >= 0
+    ) %>%
+    mutate(
+        tdiff_to_posttransf_limit = difftime(posttransf_limit, episode_end, units="hours"),
+        tdiff_to_pretransf_limit = difftime(episode_start, pretransf_limit, units="hours")
+    )
+
+table(master_mod$tdiff_to_prev_transf_more_than_posttransf_interval)
+
+# Procedure blood loss
+master_mod_proc <- masterim_with_labs %>% 
+    filter(henkilotunnus %in% unique(bleeds_filtered$henkilotunnus))   %>%
+    select(henkilotunnus, potilas_saliin, potilas_salista) %>%
+    filter(!is.na(potilas_saliin)) %>%
+    distinct() %>%
+    # Define the pretransf and posttransf limits for each episode (defined by pretransf_interval and posttransf_interval
+    # unless there exist another transfusion episode within the interval)
+    group_by(henkilotunnus) %>%
+    arrange(henkilotunnus, potilas_saliin) %>%
+    mutate(
+        pretransf_limit = pmin(
+            pmax(
+                lag(potilas_salista),
+                potilas_saliin - pretransf_interval,
+                na.rm = TRUE
+            ),
+            potilas_saliin
+        ),
+        posttransf_limit = pmax(pmin(lead(potilas_saliin), potilas_salista+posttransf_interval_proc, 
+                            na.rm=TRUE), potilas_salista),
+        tdiff_to_prev_oper_more_than_posttransf_interval = difftime(pretransf_limit, lag(posttransf_limit)) >= 0
+    ) %>%
+    mutate(
+        tdiff_to_posttransf_limit_oper = difftime(posttransf_limit, potilas_salista, units="hours"),
+        tdiff_to_pretransf_limit_oper = difftime(potilas_saliin, pretransf_limit, units="hours")
+    )
+
+## NB! Data pipeline changed on 8.7.2024. We're currently only
+## interested in pre- and intrableeding, so the post-op and post-episode
+## bleeds for sequential episodes/ops overlap with prebleeds.
+## We don't use post-bleeds currently in the paper
+
+table(master_mod_proc$tdiff_to_prev_oper_more_than_posttransf_interval)
+# One False, i.e. there seems to be 2 operations going on at the same time.
+
+# This is the case where this happens:
+# filter(master_mod_proc, !tdiff_to_prev_transf_more_than_posttransf_interval) %>% View()
+
+# We will not handle that for now, since it is only one observation.
+```
+
+Join bleeding data to reduced master:
+
+```{r}
+# PART 3
+# Join transf bleedings
+master_bleed_reduced <- master_mod %>%
+    full_join(bleeds_filtered, by="henkilotunnus", relationship="many-to-many") %>%
+    distinct() %>%
+    group_by(henkilotunnus, episode_start, episode_end, transfusion_episode_num) %>%
+    arrange(henkilotunnus, episode_start) %>%
+    summarise(
+        pretransf24_bleeding = sum(ifelse(blood_loss_time < episode_start & blood_loss_time >= pretransf_limit, blood_loss_amount, 0)),
+        intratransf_bleeding = sum(ifelse(blood_loss_time >= episode_start & blood_loss_time <= episode_end, blood_loss_amount, 0)),
+        posttransf24_bleeding = sum(ifelse(blood_loss_time > episode_end & blood_loss_time <= posttransf_limit, blood_loss_amount, 0)),
+        tdiff_to_posttransf_limit = mean(tdiff_to_posttransf_limit),
+        tdiff_to_pretransf_limit = mean(tdiff_to_pretransf_limit)
+    ) %>%
+    ungroup() %>%
+    distinct()
+
+nrow(master_bleed_reduced) # > 29k 
+
+# Join procedure bleedings
+master_bleed_reduced_proc <- master_mod_proc %>%
+    full_join(bleeds_filtered, by="henkilotunnus", relationship="many-to-many") %>%
+    distinct() %>%
+    group_by(henkilotunnus, potilas_saliin, potilas_salista) %>%
+    arrange(henkilotunnus, potilas_saliin) %>%
+    summarise(
+        preop_bleeding = sum(ifelse(blood_loss_time < potilas_saliin & blood_loss_time >= pretransf_limit, blood_loss_amount, 0)),
+        intraop_bleeding = sum(ifelse(blood_loss_time >= potilas_saliin & blood_loss_time <= potilas_salista, blood_loss_amount, 0)),
+        postop_bleeding = sum(ifelse(blood_loss_time > potilas_salista & blood_loss_time <= posttransf_limit, blood_loss_amount, 0)),
+        # Then the splitted posttransf_bleedings
+        # Note! posttransf_bleedingX stands for the amount of bleeding that has taken place between X-24 h and X, NOT the cumulative bleeding up until X
+        postop_bleeding24 = sum(ifelse(blood_loss_time > potilas_salista & blood_loss_time <= potilas_salista + 24*hour, blood_loss_amount, 0)),
+        postop_bleeding48 = ifelse(tdiff_to_posttransf_limit_oper > 24, 
+            sum(ifelse(blood_loss_time > potilas_salista + 24*hour & blood_loss_time <= potilas_salista + 2*24*hour, blood_loss_amount, 0)), 0),
+        postop_bleeding72 = ifelse(tdiff_to_posttransf_limit_oper > 2*24, 
+            sum(ifelse(blood_loss_time > potilas_salista + 2*24*hour & blood_loss_time <= potilas_salista + 3*24*hour, blood_loss_amount, 0)), 0),
+        postop_bleeding96 = ifelse(tdiff_to_posttransf_limit_oper > 3*24, 
+            sum(ifelse(blood_loss_time > potilas_salista + 3*24*hour & blood_loss_time <= potilas_salista + 4*24*hour, blood_loss_amount, 0)), 0),
+        postop_bleeding120 = ifelse(tdiff_to_posttransf_limit_oper > 4*24, 
+            sum(ifelse(blood_loss_time > potilas_salista + 4*24*hour & blood_loss_time <= potilas_salista + 5*24*hour, blood_loss_amount, 0)), 0),
+        tdiff_to_postop_limit = mean(tdiff_to_posttransf_limit_oper),
+        tdiff_to_preop_limit = mean(tdiff_to_pretransf_limit_oper)
+    ) %>%
+    ungroup() %>%
+    distinct()
+
+nrow(master_bleed_reduced_proc) # > 14k
+```
+
+Left join reduced blood loss-master to masterim_with_labs:
+
+```{r}
+# PART 4 - Join to full master
+common_cols_transf = intersect(names(masterim_with_labs), names(master_bleed_reduced))
+common_cols_proc = intersect(names(masterim_with_labs), names(master_bleed_reduced_proc))
+
+master_bleed <- masterim_with_labs %>%
+    # Blood loss associated with transfusion episode
+    left_join(master_bleed_reduced, by=common_cols_transf) %>%
+    mutate(
+        pretransf24_bleeding = ifelse(is.na(pretransf24_bleeding), 0, pretransf24_bleeding),
+        intratransf_bleeding = ifelse(is.na(intratransf_bleeding), 0, intratransf_bleeding),
+        posttransf24_bleeding = ifelse(is.na(posttransf24_bleeding), 0, posttransf24_bleeding)
+    ) %>%
+    # Blood loss associated with operation
+    left_join(master_bleed_reduced_proc, by=common_cols_proc) %>%
+    mutate(
+        preop_bleeding = ifelse(is.na(preop_bleeding), 0, preop_bleeding),
+        intraop_bleeding = ifelse(is.na(intraop_bleeding), 0, intraop_bleeding),
+        postop_bleeding = ifelse(is.na(postop_bleeding), 0, postop_bleeding),
+        postop_bleeding24 = ifelse(is.na(postop_bleeding24), 0, postop_bleeding24),
+        postop_bleeding48 = ifelse(is.na(postop_bleeding48), 0, postop_bleeding48),
+        postop_bleeding72 = ifelse(is.na(postop_bleeding72), 0, postop_bleeding72),
+        postop_bleeding96 = ifelse(is.na(postop_bleeding96), 0, postop_bleeding96),
+        postop_bleeding120 = ifelse(is.na(postop_bleeding120), 0, postop_bleeding120)
+    )
+
+nrow(master_bleed) # 109 516
+
+rm(masterim_with_labs, master_bleed_reduced, master_bleed_reduced_proc)
+```
+
+# BMI Data
+
+Prepare data:
+
+```{r}
+bmi <- readRDS("./results/data/pituus_paino_bmi.rds") %>%
+    filter(henkilotunnus %in% IDs)
+
+bmi_filtered <- bmi %>%
+    group_by(henkilotunnus, mittaus_pvm) %>%
+    mutate(
+        pituus = mean(pituus, na.rm=TRUE),
+        paino = mean(paino, na.rm=TRUE),
+        bmi = mean(bmi, na.rm=TRUE)
+    ) %>%
+    select(-lahdejarjestelma) %>%
+    distinct()
+
+rm(bmi)
+```
+
+We will imputate missing height/weight/bmi values, if one of these is missing. Below are functions to do the imputation:
+
+```{r}
+# Functions to calculate the height/weight/bmi
+calc_bmi <- function(h, w){
+    if(length(w) > 1 | length(h) > 1){ # If input is a vector
+        if(h[1] > 10){
+            h <- h/100
+        }
+        return(round(w/(h)^2, 1))
+    }
+    if(h[1] > 10){
+        h <- h/100
+    }
+    if(h < 1 | h > 3 | is.na(h) | is.na(w) | w < 10 | w > 500){
+        return(NA)
+    }
+    round(w/(h)^2, 1)
+}
+calc_w <- function(h, bmi){
+    if(length(bmi) > 1 | length(h) > 1){ # If input is a vector
+        if(h[1] > 10){
+            h <- h/100
+        }
+        return(round(bmi*(h)^2, 1))
+    }
+    if(h > 10){
+        h <- h/100
+    }
+    if(is.na(h) | is.na(bmi) | h < 1 | h > 3 | bmi < 5 | bmi > 100) {
+        return(NA)
+    }
+    round(bmi*(h)^2, 1)
+}
+calc_h <- function(w, bmi){
+    if(length(bmi) > 1 | length(w) > 1){ # If input is a vector
+        return(round(sqrt(w/bmi)*100))
+    }
+    if(is.na(bmi) | is.na(w) | bmi < 5 | bmi > 100 | w < 10 | w > 500) {
+        return(NA)
+    }
+    round(sqrt(w/bmi)*100)
+}
+```
+
+Then impute:
+
+```{r}
+# Impute missing height measurements with previous measurements
+bmi_filtered2 <- bmi_filtered %>%
+    arrange(henkilotunnus, mittaus_pvm) %>%
+    group_by(henkilotunnus) %>%
+    fill(pituus, .direction = "downup") %>%
+    distinct() %>%
+    ungroup()
+
+# Impute measurement if one missing and two other found
+bmi_filtered3 <- bmi_filtered2 %>%
+    mutate(
+        pituus = ifelse(is.na(pituus) | pituus == 0, calc_h(paino, bmi), pituus),
+        paino = ifelse(is.na(paino) | paino == 0, calc_w(pituus, bmi), paino),
+        bmi = ifelse(is.na(bmi) | bmi == 0, calc_bmi(pituus, paino), bmi)
+    ) %>%
+    mutate(
+        pituus = ifelse(pituus < 20 | pituus > 300, NA, pituus),
+        paino = ifelse(paino < 20 | paino > 500, NA, paino),
+        bmi = ifelse(bmi < 5 | bmi > 100, NA, bmi)
+    ) %>%
+    distinct()
+
+nrow(bmi_filtered3) # 180k
+```
+
+Left join to master:
+
+```{r}
+# Rename columns
+new_names = c(bmi_h_w_time = "mittaus_pvm",
+                height = "pituus",
+                weight = "paino")
+
+bmi_filtered3 <- bmi_filtered3 %>%
+    select(-c(sukupuoli, ika_mittaushetkella)) %>%
+    rename(all_of(new_names))
+
+# Join
+master_bmi <- master_bleed %>%
+    left_join(bmi_filtered3, by="henkilotunnus", relationship = "many-to-many") %>%
+    filter(bmi_h_w_time <= veri_alku_aika) %>%
+    group_by(henkilotunnus) %>%
+    # Include measurements at most 30 days old at the time of transfusion
+    filter(difftime(veri_alku_aika, bmi_h_w_time, units="days") <= 30)
+
+nrow(master_bmi) # 439k
+
+rm(bmi_filtered, bmi_filtered2, bmi_filtered3)
+```
+
+Let's select the row with as few NA values as possible, but time wise as close to the transfusion as possible:
+
+```{r}
+master_bmi_reduced <- master_bmi %>%
+    mutate(nNA_bmi_h_w = rowSums(is.na(matrix(c(height, weight, bmi), ncol=3)))) %>% 
+    group_by(help_y) %>%
+    arrange(henkilotunnus, help_y, nNA_bmi_h_w, desc(bmi_h_w_time)) %>%
+    slice_head() %>%
+    select(-nNA_bmi_h_w)
+
+nrow(master_bmi_reduced) == n_distinct(master_bmi_reduced$help_y) # TRUE & 92k rows
+```
+
+Join the reduced bmi master to the complete master:
+
+```{r}
+bmi_master_common_cols <- intersect(names(master_bleed), names(master_bmi_reduced))
+
+master_bmi_final <- master_bleed %>%
+    left_join(master_bmi_reduced, by=bmi_master_common_cols)
+
+nrow(master_bmi_final) # 109 516
+n_distinct(master_bmi_final$help_y) # 109 516
+
+rm(master_bleed, master_bmi_reduced, master_bmi)
+rm(multilab_timelimit, multilab_timelimit_filtered)
+```
+
+# Blood types
+
+```{r}
+# Read the lab data
+lab_data_timelimitless <- readRDS("./results/data/multilab_labrat_ei_aikarajaa.rds")
+
+# Filter the data
+BT_data <- lab_data_timelimitless %>% 
+    filter(tutkimus_lyhenne %in% c("E -ABORh", "E -VrTark") &
+    (henkilotunnus %in% IDs))
+
+ID_without_BT_data <- setdiff(IDs, BT_data$henkilotunnus)
+length(ID_without_BT_data) # 11 ID without blood type data
+
+rm(lab_data_timelimitless)
+```
+
+```{r}
+# Categorize the ABO blood types
+ABO_A <- c("A RhD neg", "A RhD pos", "A Rh neg","A Rh pos","A+(posit)",
+            "A-(negat)", "Afinn RhD pos", "A RhD ?", "A", "Afinn RhD neg",
+            "AfinnRhDpos","A finn Rh+", "A finn pos")
+
+ABO_B <- c("B RhD pos", "B RhD neg", "B Rh neg", "B Rh pos", "B+(posit)",
+            "B-(negat)", "Bw RhD neg", "Bweak RhD pos", "B RhD ?", "Bw RhD pos",
+            "B-(negat)")
+
+ABO_AB <- c("AB RhD pos", "AB RhD neg", "AB Rh pos", "AB Rh neg", "AB+(posit)", 
+            "AB-(negat)", "ABweak RhD neg", "AfinnB RhD neg", "AB RhD ?", 
+            "A2B Rh neg", "ABw RhDpos", "A2B Rh pos", "AfinnB RhD pos")
+
+ABO_O <- c("O RhD pos", "O Rh pos", "O RhD neg", "O Rh neg", "O+(posit)",
+            "O-(negat)", "O RhD ?")
+
+RhD_pos <- c("A RhD pos", "O RhD pos", "O Rh pos", "AB RhD pos", "A Rh pos", 
+            "B RhD pos", "AB Rh pos", "B Rh pos", "A+(posit)", "B+(posit)", 
+            "O+(posit)", "AB+(posit)", "? RhD pos", "Afinn RhD pos", "Bweak RhD pos",
+            "Bw RhD pos", "ABw RhDpos", "A2B Rh pos", "A finn Rh+", "AfinnB RhD pos",
+            "A finn pos", "AfinnRhDpos")
+
+RhD_neg <- c("A RhD neg", "O RhD neg", "A Rh neg", "AB RhD neg", "B RhD neg", 
+            "B Rh neg", "O Rh neg", "AB Rh neg", "O-(negat)", "A-(negat)",
+            "AB-(negat)", "B-(negat)", "Bw RhD neg", "ABweak RhD neg", "? RhD neg",
+            "Afinn RhD neg", "AfinnB RhD neg", "A2B Rh neg")
+```
+
+```{r}
+# Rename
+BT_data <- BT_data %>%
+    mutate(
+        ABO = case_when(
+            tulos %in% ABO_A ~ "A",
+            tulos %in% ABO_B ~ "B",
+            tulos %in% ABO_O ~ "O",
+            tulos %in% ABO_AB ~ "AB",
+            TRUE ~ NA
+        ),
+        RhD = case_when(
+            tulos %in% RhD_pos ~ "pos",
+            tulos %in% RhD_neg ~ "neg",
+            TRUE ~ NA
+        )
+    )
+
+nrow(BT_data) # 118 556 rows
+```
+
+```{r}
+BT_data <- BT_data %>%
+    mutate(Stem_Cell_Transplantation = ifelse(grepl("kantasolusiirto", lausunto), TRUE, NA))
+
+# TBD: Define if this is relevant
+```
+
+Selecting relevant blood type measurements:
+
+```{r}
+# Tables
+# Remember to remove Stem_Cell_Transplantation if not included!
+vrtark <- BT_data %>%
+    filter(tutkimus_lyhenne == "E -VrTark") %>% # Primary lab result
+    select(henkilotunnus, naytteenottoaika, ABO, RhD, Stem_Cell_Transplantation, tutkimus_lyhenne)
+
+aborh <- BT_data %>%
+    filter(tutkimus_lyhenne == "E -ABORh") %>% # Secondary lab result
+    select(henkilotunnus, naytteenottoaika, ABO, RhD, Stem_Cell_Transplantation, tutkimus_lyhenne)
+
+# Select one measurement per time stamp
+vrtark_filt <- vrtark %>%
+    # Create a column with number of NA
+    mutate(n_na = rowSums(is.na(matrix(c(ABO, RhD), ncol=2)))) %>% 
+    group_by(henkilotunnus, naytteenottoaika) %>%
+    # Order according to number of NA, within specific ID and time stamp
+    arrange(henkilotunnus, naytteenottoaika, n_na) %>%
+    # Get the one with most information
+    slice_head() %>%
+    select(-n_na) %>%
+    ungroup()
+
+aborh_filt <- aborh %>%
+    # Create a column with number of NA
+    mutate(n_na = rowSums(is.na(matrix(c(ABO, RhD), ncol=2)))) %>% 
+    group_by(henkilotunnus, naytteenottoaika) %>%
+    # Order according to number of NA
+    arrange(henkilotunnus, naytteenottoaika, n_na) %>%
+    # Get the one with most information
+    slice_head() %>%
+    select(-n_na) %>%
+    ungroup()
+```
+
+```{r}
+# Matching transfusions to vrtark (primary lab result)
+
+master_vtark_wip <- master_bmi_final %>%
+    full_join(vrtark_filt, by = "henkilotunnus", relationship = "many-to-many") %>%
+    group_by(help_y) %>% 
+    # 1. Blood type measurement upper bound is transfusions start time
+    filter(naytteenottoaika <= veri_alku_aika) %>%
+    # 2. Get the one closest to transfusion start time
+    filter(naytteenottoaika == max(naytteenottoaika)) %>%
+    ungroup()
+
+nrow(master_vtark_wip) # 109 322 rows
+n_distinct(master_vtark_wip$help_y) # 109 322 unique help_y
+```
+
+Get dropped
+
+```{r}
+# Get the dropped out help_y (unique identifier for a transfusion)
+y_not_dropped <- unique(master_vtark_wip$help_y)
+all_y <- unique(masterim$help_y)
+y_dropped <- setdiff(all_y, y_not_dropped) 
+
+# Get the transfusions
+dropped_transf_BT <- master_bmi_final %>%
+    filter(help_y %in% y_dropped)
+
+nrow(dropped_transf_BT) == n_distinct(dropped_transf_BT$help_y) # TRUE
+
+# Join
+dropped_transf_BT_fj <- dropped_transf_BT %>%
+    full_join(aborh_filt, by = "henkilotunnus", relationship = "many-to-many") %>%
+    group_by(help_y) %>% 
+    # 1
+    filter(naytteenottoaika <= veri_alku_aika) %>%
+    # 2
+    filter(naytteenottoaika == max(naytteenottoaika)) %>%
+    ungroup()
+
+nrow(dropped_transf_BT_fj) == n_distinct(dropped_transf_BT_fj$help_y) # TRUE
+n_distinct(dropped_transf_BT_fj$help_y) # 47
+```
+
+```{r}
+# Bind BTs of dropped transfusions to the full join table
+all(names(dropped_transf_BT_fj) == names(master_vtark_wip)) # TRUE
+
+transf_BT_fj2 <- bind_rows(dropped_transf_BT_fj, master_vtark_wip) %>% distinct()
+
+# Create NA BTs to those tranfusions that are still missing
+y_all_dropped <- setdiff(all_y, unique(transf_BT_fj2$help_y))
+nrow(transf_BT_fj2) + length(y_all_dropped) # 109 516
+
+no_BT_data_transf <- master_bmi_final %>%
+    filter(help_y %in% y_all_dropped) %>%
+    mutate(
+        naytteenottoaika = NA,
+        ABO = NA,
+        RhD = NA,
+        Stem_Cell_Transplantation = NA, # Remember to comment out if not included
+        tutkimus_lyhenne = NA
+    ) 
+
+all(names(no_BT_data_transf) == names(transf_BT_fj2)) # TRUE
+
+# Bind the table to BT x tranfusion join tables
+transf_BT_fj3 <- bind_rows(no_BT_data_transf, transf_BT_fj2) %>% distinct()
+
+nrow(transf_BT_fj3) # 109 516
+```
+
+```{r}
+# Quick check all transfusions are onboard
+all(sort(master_bmi_final$help_y) == sort(transf_BT_fj3$help_y)) # TRUE
+
+# Rename a few columns
+new_names = c(BloodType_time = "naytteenottoaika", Lab_Test_Label = "tutkimus_lyhenne")
+masterim_with_vtark <- transf_BT_fj3 %>%
+    rename(all_of(new_names))
+
+rm(BT_data, transf_BT_fj3, master_bmi_final, masterim, no_BT_data_transf, transf_BT_fj2, dropped_transf_BT, master_vtark_wip, aborh, aborh_filt, bleeds_filtered, master_mod, master_mod_proc, masterim_platelets, masterim_transf_episodes, vrtark, vrtark_filt)
+```
+
+```{r}
+saveRDS(masterim_with_vtark, "./results/data/masterim_with_vtark.rds")
+rm(masterim_with_vtark)
+```
+
+We might be interested in the data contained within 
+
+1) `apotti_toimenpide` (NB! currently handled earlier)
+2) `jakso_drg_koodi`
+
+# drg + transf
+
+```{r}
+drg <- readRDS("./results/data/new_drgs_neat.rds") %>%
+    filter(henkilotunnus %in% IDs)
+
+drg_transf <- drg %>%
+  left_join(transf, by = c("henkilotunnus", "shjakso_numero")) %>%
+  ## Handle transf where shjakso_num missing
+  # Left join and separate columns w.r.t. to the stricter left_join  
+  left_join(transf_wo_shnum, by = c("henkilotunnus"), suffix = c("_strict", "_loose")) %>%
+  # Coalesce _strict and _loose columns (imagine a zipper)
+  mutate(across(ends_with("_strict"), ~ coalesce(.x, get(gsub("_strict", "_loose", cur_column()))))) %>%
+  # Drop _loose (useless now)
+  select(-contains("_loose")) %>%
+  # Rename _strict by dropping "_strict"
+  rename_with(~ gsub("_strict", "", .x), ends_with("_strict")) %>%
+  # We prefer matches with neatly contained intervals
+  mutate(crossage_penalty = if_else(veri_loppu_aika > loppuhetki | veri_alku_aika < alkuhetki, 9999, 0)) %>% # super dubious hack
+  filter(alkuhetki - 24*60*60 <= veri_alku_aika & veri_alku_aika <= loppuhetki + 24*60*60) %>%
+  mutate(veri_drg_alusta_tuntia = difftime(veri_alku_aika, alkuhetki, units = "hours"),
+         veri_drg_lopusta_tuntia = difftime(veri_alku_aika, loppuhetki, units = "hours")) %>%
+  group_by(help_y) %>%
+  slice_min(order_by = abs(veri_drg_alusta_tuntia) + crossage_penalty) %>%
+  slice_min(order_by = veri_drg_lopusta_tuntia + crossage_penalty) %>%
+  slice(1) %>%
+  ungroup() %>%
+  select(-crossage_penalty) %>%
+  rename(drg_alkuhetki = alkuhetki,
+         drg_loppuhetki = loppuhetki)
+
+sum(!is.na(drg_transf$drg)) # 97.1% units matched to DRG without shjakso_numero requirement, 91.4% with
+
+nonmatched_transf <- transf %>%
+    filter(!(help_y %in% drg_transf$help_y))
+nonmatched_drg <- drg %>%
+    filter(!(shjakso_numero %in% drg_transf$shjakso_numero)) %>%
+    filter(is.na(shjakso_numero))
+
+rematch <- nonmatched_drg %>%
+    left_join(nonmatched_transf, by = "henkilotunnus") %>%
+    mutate(crossage_penalty = if_else(veri_loppu_aika > loppuhetki | veri_alku_aika < alkuhetki, 9999, 0)) %>% # super dubious hack
+    filter(alkuhetki - 24*60*60 <= veri_alku_aika & veri_alku_aika <= loppuhetki + 24*60*60) %>%
+    mutate(veri_drg_alusta_tuntia = difftime(veri_alku_aika, alkuhetki, units = "hours"),
+            veri_drg_lopusta_tuntia = difftime(veri_alku_aika, loppuhetki, units = "hours")) %>%
+    group_by(help_y) %>%
+    slice_min(order_by = abs(veri_drg_alusta_tuntia) + crossage_penalty) %>%
+    slice_min(order_by = veri_drg_lopusta_tuntia + crossage_penalty) %>%
+    slice(1) %>%
+    ungroup() %>%
+    rename(shjakso_numero = shjakso_numero.y,
+           drg_alkuhetki = alkuhetki,
+           drg_loppuhetki = loppuhetki) %>%
+    select(-c(crossage_penalty, shjakso_numero.x))
+
+# With our current data, we don't
+# get any extra rows from checking against
+# NA shjakso_num within the target table
+# here, but it's good to have this here if
+# things (data) change in the future.
+drg_transf_whole <- bind_rows(drg_transf, rematch)
+
+# NB! IMPORTANT! READ THIS!
+# The above breaks one tiny specific thing in our data
+# We have to fix that here because the pipe is otherwise effective
+# and I don't want to redo it.
+# When we match with both strict and loose rules, some rows get matched
+# also with an RBC (loose) when the strict matching is Plasma.
+# Only 5 Plasma units have RhD_unit in the original data,
+# but when we coalesce (arbitrate NAs between strict and loose),
+# we end up imputing strict Plasma match RhD_units with RBC RhD_units.
+# In the resulting df we can recognize the original Plas RhD
+# entries by NA veri_ykiskko_res_id, so we'll strip all other RhD_units
+# with !is.na(veri_ykiskko_res_id).
+# Hacky, I know. I'm tired.
+drg_transf_fix <- drg_transf_whole %>%
+    mutate(RhD_unit = ifelse(!is.na(veri_ykiskko_res_id) & product_type == "Plasma" & !is.na(RhD_unit), NA, RhD_unit))
+
+rm(drg, nonmatched_transf, nonmatched_drg)
+```
+
+### full_join(masterim, drg_transf)
+
+```{r}
+masterim_with_vtark <- readRDS("./results/data/masterim_with_vtark.rds")
+master_aux <- full_join(masterim_with_vtark, drg_transf_fix, by = colnames_wo_shjakso) %>%
+    mutate(shjakso_numero = ifelse(is.na(shjakso_numero.x), shjakso_numero.y, shjakso_numero.x)) %>%
+    select(-c(shjakso_numero.x, shjakso_numero.y))
+
+rm(masterim_with_vtark, drg_transf)
+```
+
+```{r}
+dupes <- master_aux %>%
+    group_by(help_y) %>%
+    filter(n() > 1)
+```
+
+# Set primaries
+
+Because we now can have multiple entries for the same variable from different tables, and because often times they don't agree with each other, we need to find a way to resolve "primacy", i.e. which entry (from a particular table) we "believe in most". Currently, we think the most intuitive way to achieve this is to check which table has an entry closest (timestamp wise) to the start of the transfusion. We have several variables of interest:
+
+- **ICD codes**:
+We'll want to use `postop_dg_koodi` whenever available. If not, use the timestamp approach. When relying on the postop_dg, it is important to keep in mind that we mapped operations with -6 hours preop buffer and a week postop buffer. This means that a transfusion can map to an operation on the seventh day after the operation, if it's the closest one. Whether it's reasonable to think that the blood was administered due to this, one can argue both ways.
+
+- **Specialty (EALA)**
+We have specialties in `toim`, `oper`, `oh`, and `kaynti`. In many cases they don't agree with each other, either naturally or due to our mapping/matching. Sometimes some EALA codes seem to be more accurate (3 char) than others (2 char). We could devise an approach where we first prioritize accuracy and only then timestamp proximity, but we'll see.
+
+- **Reason for presenting (tulosyy)**
+Found in `oh` and `kaynti`, so any configuration of NAs is possible. When neither `shjakso_tulosyy_selite` nor `tulosyy_selite` are NA, the entries usually agree with each other, but not always, so we default to the timestamp approach.
+
+- **Presentation method (tulotapa)**
+Found in `oh` and `kaynti`, and curiously
+1) oh is more complete
+2) their class distribution is different: "Siirto ajanvarausklinikalta osastohoitoon" is much more common in `kaynti` (tulotapa_selite). We will make a note of this and inquire about it from Minna/someone. In the meantime, we'll default to using the timestamp approach.
+
+- **Location (vo_toimipiste & toimipiste & leikkaava_yksikko)**
+We're probably going to have to use multiple locations, as I'm not confident that "vastaanottava toimipiste" found in `diag` and `kaynti` is equivalent to "toimipiste" in `oh`. Additionally, `oper` contains data on "leikkaava_yksikko", so we'll probably want to preserve that. Thus, we'll resolve conflicts between "vo_toimipiste" using the timestamp approach, but leave other location indicators as they are?
+
+- **Primary start and end for an episode**
+This we should probably do just with the timestamp approach.
+
+```{r}
+if (!file.exists("./results/data/master_prim.rds")){
+
+    master_prim <- master_aux %>%
+    rowwise() %>%
+    mutate(
+        primary_timestamps_from = {
+        # the pool to select from
+        options = c("diag", "op", "oh", "kaynti")
+        # the timediffs to base the selection on
+        tdiffs = c(abs(as.numeric(veri_kontaktin_alun_jalkeen_tuntia)),
+                    abs(as.numeric(veri_operaation_alusta_tuntia)),
+                    abs(as.numeric(veri_oh_alusta_tuntia)),
+                    abs(as.numeric(veri_kaynti_alusta_tuntia)))
+        # get ordering index
+        order_ix = order(tdiffs)
+        # order values based on timediffs
+        options_ordered = options[order_ix]
+        # select the highest ranked value among options
+        options_ordered[1]
+        }) %>%
+    mutate(primary_start = case_when(primary_timestamps_from == "diag" ~ kontakti_alkuhetki,
+                                    primary_timestamps_from == "op" ~ potilas_saliin,
+                                    primary_timestamps_from == "oh" ~ ohjakso_alkuhetki,
+                                    primary_timestamps_from == "kaynti" ~ alkuhetki),
+            primary_end = case_when(primary_timestamps_from == "diag" ~ kontakti_loppuhetki,
+                                    primary_timestamps_from == "op" ~ potilas_salista,
+                                    primary_timestamps_from == "oh" ~ ohjakso_loppuhetki,
+                                    primary_timestamps_from == "kaynti" ~ loppuhetki)) %>%
+    mutate(
+        primary_ICD_code = {
+        # the pool to select from
+        options = c(main_diag_code, ohjakso_paadg_koodi, paadg_koodi) 
+        # the timediffs to base the selection on
+        tdiffs = c(abs(as.numeric(veri_kontaktin_alun_jalkeen_tuntia)), abs(as.numeric(veri_oh_alusta_tuntia)), abs(as.numeric(veri_kaynti_alusta_tuntia)))
+        # get ordering index
+        order_ix = order(tdiffs)
+        # order values based on timediffs
+        options_ordered = c(postop_dg_koodi, options[order_ix]) # set postop_dg as default first, order rest
+        # drop NA
+        options_non_na = discard(options_ordered, is.na)
+        # select the highest ranked value among non-NA values, if none, set NA
+        if (length(options_non_na) > 0) {options_non_na[[1]]} else {NA}
+        },
+
+        primary_ICD_label = {
+        # the pool to select from
+        options = c(main_diag_label, ohjakso_paadg_selite, paadg_selite) 
+        # the timediffs to base the selection on
+        tdiffs = c(abs(as.numeric(veri_kontaktin_alun_jalkeen_tuntia)), abs(as.numeric(veri_oh_alusta_tuntia)), abs(as.numeric(veri_kaynti_alusta_tuntia)))
+        # get ordering index
+        order_ix = order(tdiffs)
+        # order values based on timediffs
+        options_ordered = c(postop_dg_selite, options[order_ix]) # set postop_dg as default first, order rest
+        # drop NA
+        options_non_na = discard(options_ordered, is.na)
+        # select the highest ranked value among non-NA values, if none, set NA
+        if (length(options_non_na) > 0) {options_non_na[[1]]} else {NA}
+        },
+
+        primary_eala_label = {
+        # the pool to select from
+        options = c(pot_eala_selite.x, pot_eala_selite.y, ohjakso_pot_eala_selite, pot_eala_selite)
+        # charlengths to base the first selection step on
+        lengths = c(nchar(pot_eala_koodi.x), nchar(pot_eala_koodi.y), nchar(ohjakso_pot_eala_koodi), nchar(pot_eala_koodi))
+        # the timediffs to base the selection on
+        tdiffs = c(abs(as.numeric(veri_toim_jalkeen_tuntia)),
+                    abs(as.numeric(veri_operaation_alusta_tuntia)), 
+                    abs(as.numeric(veri_oh_alusta_tuntia)), 
+                    abs(as.numeric(veri_kaynti_alusta_tuntia)))
+        # get ordering index
+        order_ix = order(-lengths, tdiffs) # -lengths because we need the smallest value (largest length) to be on top
+        # order values based on ordering
+        options_ordered = options[order_ix]
+        # drop NA
+        options_non_na = discard(options_ordered, is.na)
+        # select the highest ranked value among non-NA values, if none, set NA
+        if (length(options_non_na) > 0) {options_non_na[[1]]} else {NA}
+        },
+
+        primary_eala_code = {
+        # the pool to select from
+        options = c(pot_eala_koodi.x, pot_eala_koodi.y, ohjakso_pot_eala_koodi, pot_eala_koodi)
+        # charlengths to base the first selection step on
+        lengths = c(nchar(pot_eala_koodi.x), nchar(pot_eala_koodi.y), nchar(ohjakso_pot_eala_koodi), nchar(pot_eala_koodi))
+        # the timediffs to base the selection on
+        tdiffs = c(abs(as.numeric(veri_toim_jalkeen_tuntia)),
+                    abs(as.numeric(veri_operaation_alusta_tuntia)), 
+                    abs(as.numeric(veri_oh_alusta_tuntia)), 
+                    abs(as.numeric(veri_kaynti_alusta_tuntia)))
+        # get ordering index
+        order_ix = order(-lengths, tdiffs) # -lengths because we need the smallest value (largest length) to be on top
+        # order values based on ordering
+        options_ordered = options[order_ix]
+        # drop NA
+        options_non_na = discard(options_ordered, is.na)
+        # drop if 99 code
+        options_non_na <- setdiff(options_non_na, c("99D", "99E"))
+        # select the highest ranked value among non-NA values, if none, set NA
+        if (length(options_non_na) > 0) {options_non_na[[1]]} else {NA}
+        },
+
+        primary_tulosyy = {
+        # the pool to select from
+        options = c(shjakso_tulosyy_selite, tulosyy_selite)
+        # the timediffs to base the selection on
+        tdiffs = c(abs(as.numeric(veri_oh_alusta_tuntia)), 
+                    abs(as.numeric(veri_kaynti_alusta_tuntia)))
+        # get ordering index
+        order_ix = order(tdiffs)
+        # order values based on ordering
+        options_ordered = options[order_ix] 
+        options_non_na = discard(options_ordered, is.na)
+        # select the highest ranked value among non-NA values, if none, set NA
+        if (length(options_non_na) > 0) {options_non_na[[1]]} else {NA}
+        },
+
+        primary_tulotapa = {
+        # the pool to select from
+        options = c(shjakso_tulotapa_selite, tulotapa_selite)
+        # the timediffs to base the selection on
+        tdiffs = c(abs(as.numeric(veri_oh_alusta_tuntia)), 
+                    abs(as.numeric(veri_kaynti_alusta_tuntia)))
+        # get ordering index
+        order_ix = order(tdiffs)
+        # order values based on ordering
+        options_ordered = options[order_ix]
+        # drop NA
+        options_non_na = discard(options_ordered, is.na)
+
+        # select the highest ranked value among non-NA values, if none, set NA
+        if (length(options_non_na) > 0) {options_non_na[[1]]} else {NA}
+        },
+
+        primary_location = {
+        # the pool to select from
+        options = c(kontakti_vo_toimipiste_selite, leikkaava_yksikko_selite, ohjakso_toimipiste_selite, vo_toimipiste_nimi)
+        # the timediffs to base the selection on
+        tdiffs = c(abs(as.numeric(veri_kontaktin_alun_jalkeen_tuntia)),
+                    abs(as.numeric(veri_operaation_alusta_tuntia)),
+                    abs(as.numeric(veri_oh_alusta_tuntia)),
+                    abs(as.numeric(veri_kaynti_alusta_tuntia)))
+        # get ordering index
+        order_ix = order(tdiffs)
+        # order values based on ordering
+        options_ordered = options[order_ix]
+        # drop NA
+        options_non_na = discard(options_ordered, is.na)
+        # Use a custom filtering criterion to exclude options containing 'rö'
+        valid_options = discard(options_non_na, ~grepl("rö", .))
+        # select the highest ranked value among valid options, if none, set NA
+        if (length(valid_options) > 0) {valid_options[[1]]} else {NA}
+        }
+
+    ) %>%
+    ungroup()
+
+    saveRDS(master_prim, "./results/data/master_prim.rds") 
+    } else {master_prim <- readRDS("./results/data/master_prim.rds")}
+
+rm(master_aux)
+```
+
+# Tweaks and stuff
+
+## Dialysis locations
+Force dialysis events to Dialyysihoitokeskus Delta, Kolmiosairaala
+
+```{r}
+dial_keskus = "Dialyysihoitokeskus Delta, Kolmiosairaala"
+master_dial <- master_prim %>%
+  mutate(primary_location = case_when(
+    kontakti_vo_toimipiste_selite == dial_keskus | vo_toimipiste_nimi == dial_keskus ~ dial_keskus, 
+    TRUE ~ primary_location))
+
+# NB! Don't remove master_prim yet
+```
+
+## Location categories
+
+```{r}
+loc_cats <- readRDS("./results/data/locations_classified_df.rds")
+
+# cleanup
+loc_cats_clean <- loc_cats %>%
+  mutate(class = ifelse(class == "other", "Other", class)) %>%
+  mutate(class = ifelse(class == "Obsteric unit" | class == "Obstertic unit", "Obstetric unit", class)) %>%
+  mutate(place = ifelse(place == "intensive care unit", "Intensive care unit", place)) %>%
+  mutate(place = ifelse(place == "palliative care unit", "Palliative care unit", place)) %>%
+  mutate(place = ifelse(place == "prehospital emergency medicine unit", "Prehospital emergency medicine unit", place))
+```
+
+```{r}
+master_loc_cats <- master_dial %>%
+  left_join(loc_cats_clean, by = c("primary_location" = "label")) %>%
+  mutate(liittyy_operaatioon = case_when(is.na(operaatio_tunnus) ~ "No",
+  veri_alku_aika < potilas_saliin ~ "Preop",
+  veri_alku_aika >= potilas_saliin & veri_alku_aika < potilas_salista ~ "Intraop",
+  veri_alku_aika >= potilas_salista ~ "Postop"))
+
+rm(master_dial)
+```
+
+## Demographic data
+
+```{r}
+demog <- readRDS("./results/data/demografia_tiedot.rds") %>%
+    filter(henkilotunnus %in% unique(master_prim$henkilotunnus)) %>%
+    select(henkilotunnus, sukupuoli_selite, syntymaaika_pvm, kuolinaika_pvm)
+
+master_demog <- master_loc_cats %>%
+    left_join(demog, by = "henkilotunnus") %>%
+    mutate(age_at_transfusion = floor(as.numeric(difftime(veri_alku_aika, syntymaaika_pvm, units = "days") / 365))) %>%
+    filter(age_at_transfusion >= 18) %>%
+    mutate(sex_groups = case_when(sukupuoli_selite == "Mies" ~ "mies",
+                                  sukupuoli_selite == "Nainen" & age_at_transfusion >= 50 ~ "nainen_postmeno",
+                                  sukupuoli_selite == "Nainen" & age_at_transfusion < 50 ~ "nainen_premeno")) %>%
+    mutate(age_groups = case_when(18 <= age_at_transfusion & age_at_transfusion <= 29 ~ "18-29",
+                                  30 <= age_at_transfusion & age_at_transfusion <= 49 ~ "30-49",
+                                  50 <= age_at_transfusion & age_at_transfusion <= 69 ~ "50-69",
+                                  70 <= age_at_transfusion & age_at_transfusion <= 89 ~ "70-89",
+                                  90 <= age_at_transfusion ~ "+90"))
+
+sum(is.na(master_demog$sukupuoli_selite)) # 0!
+
+rm(demog, master_loc_cats)
+```
+
+## Urgency/Elective categories
+
+```{r}
+# Categorize kiireellisyys.y
+master_kiir <- master_demog %>%
+    mutate(urg_elective = if_else(substring(kiireellisyys.y, 1, 2) == "LP", "Elective", "Urgent")) %>%
+    mutate(urg_cats = case_when(substring(kiireellisyys.y, 1, 2) == "LP" ~ "Elective",
+                                kiireellisyys.y == "Sininen Elinsiirtokirurgia" ~ "Organ transplant",
+                                kiireellisyys.y == "Ruskea erityisresurssia vaativa" ~ "Special resource requirement",
+                                is.na(kiireellisyys.y) ~ NA,
+                                TRUE ~ "Urgent")) %>%
+    # For another version of the plots where we don't have "Organ transplant" or "Special resource requirement"
+    mutate(urg_cats_less = case_when(substring(kiireellisyys.y, 1, 2) == "LP" ~ "Elective",
+                                is.na(kiireellisyys.y) ~ NA,
+                                TRUE ~ "Urgent"))
+
+rm(master_demog)
+```
+
+## ICD10
+
+### 1st level
+
+```{r}
+ICD_spliced <- master_kiir %>%
+    mutate(letter = substring(primary_ICD_code, 1, 1),
+           number = substring(primary_ICD_code, 2, 3),
+           decimal = substring(primary_ICD_code, 5, 20))
+
+rm(master_kiir)
+
+number_range <- sprintf('%0.2d', 0:99)
+ICD_1st <- ICD_spliced %>%
+    mutate(ICD_level_1 = case_when(letter %in% c("A", "B") ~ "Certain infectious and parasitic diseases",
+                             letter == "C" ~ "Malignant neoplasms",
+                             letter == "D" & number %in% number_range[1:49] ~ "Malignant neoplasms",
+                             letter == "D" & number %in% number_range[50:100] ~ "Diseases of the blood and blood-forming organs and certain disorders involving the immune mechanism",
+                             letter == "E" ~ "Endocrine, nutritional and metabolic diseases",
+                             letter == "F" ~ "Mental and behavioural disorders",
+                             letter == "G" ~ "Diseases of the nervous system",
+                             letter == "H" & number %in% number_range[1:60] ~ "Diseases of the eye and adnexa",
+                             letter == "H" & number %in% number_range[61:100] ~ "Diseases of the ear and mastoid process",
+                             letter == "I" ~ "Diseases of the circulatory system",
+                             letter == "J" ~ "Diseases of the respiratory system",
+                             letter == "K" ~ "Diseases of the digestive system",
+                             letter == "L" ~ "Diseases of the skin and subcutaneous tissue",
+                             letter == "M" ~ "Diseases of the musculoskeletal system and connective tissue",
+                             letter == "N" ~ "Diseases of the genitourinary system",
+                             letter == "O" ~ "Pregnancy, childbirth and the puerperium",
+                             letter == "P" ~ "Certain conditions originating in the perinatal period",
+                             letter == "Q" ~ "Congenital malformations, deformations and chromosomal abnormalities",
+                             letter == "R" ~ "Symptoms, signs and abnormal clinical and laboratory findings, not elsewhere classified",
+                             letter %in% c("S", "T") ~ "Injury, poisoning and certain other consequences of external causes",
+                             letter == "U" ~ "Codes for special purposes",
+                             letter %in% c("V", "Y") ~ "External causes of morbidity and mortality",
+                             letter == "Z" ~ "Factors influencing health status and contact with health services"))
+
+rm(ICD_spliced)
+```
+
+### 2nd level
+
+```{r}
+# Load map
+ICDL2 <- readRDS("./results/data/ICD_level_2_map.rds")
+
+# mutate
+ICDL2_m <- ICDL2 %>%
+    filter(!is.na(ICD_level_2)) %>%
+    group_by(ICD_level_2) %>%
+    arrange(number) %>%
+    mutate(range = paste0(first(number), "-", last(number))) %>%
+    mutate(ICD2_plot_label = paste0(letter, range, " | ", ICD_level_2))
+
+ICD2_mappable <- ICDL2 %>%
+    left_join(ICDL2_m)
+
+# apply
+ICD_2nd <- ICD_1st %>%
+    left_join(ICD2_mappable, by = c("letter", "number")) %>%
+    select(-c(letter, number))
+
+rm(ICD_1st)
+```
+
+## Procedure codes
+
+```{r}
+# Load map
+toimL2 <- readRDS("./results/data/toim_level_2_map.rds")
+
+toim_spliced <- ICD_2nd %>%
+    mutate(toimletter = substring(paatoimenpide_koodi, 1, 1),
+           toim2letters = substring(paatoimenpide_koodi, 1, 2)) %>%
+    mutate(toim_level_2_code = if_else(toimletter != "Y", toim2letters, substring(paatoimenpide_koodi, 1, 3)))
+
+toim_levels <- toim_spliced %>%
+    mutate(toim_level_1 = case_when(toimletter == "A" ~ "Nervous system",
+                             toimletter == "B" ~ "Endocrine system",
+                             toimletter == "C" ~ "Eye and adjacent structures",
+                             toimletter == "D" ~ "Ear, nose and larynx",
+                             toimletter == "E" ~ "Teeth, jaws, mouth and pharynx",
+                             toimletter == "F" ~ "Heart and major thoracic vessels",
+                             toimletter == "G" ~ "Other thoracic organs",
+                             toimletter == "H" ~ "Mammary gland",
+                             toimletter == "I" ~ "Interventions for mental and substance use disorders",
+                             toimletter == "J" ~ "Digestive system and spleen",
+                             toimletter == "K" ~ "Urinary system, male genital organs and retroperitoneal space",
+                             toimletter == "L" ~ "Female genital organs",
+                             toimletter == "M" ~ "Obstetrics",
+                             toimletter == "N" ~ "Musculoskeletal system",
+                             toimletter == "O" ~ "Preventive action and health promotion",
+                             toimletter == "P" ~ "Peripheral vessels and lymphatic system",
+                             toimletter == "Q" ~ "Skin and subcutaneous tissue",
+                             toimletter == "R" ~ "Rehabilitation services",
+                             toimletter == "S" ~ "Non-surgical procedures of mouth and teeth",
+                             toimletter == "W" ~ "Other procedures and procedures acting on several organ systems",
+                             toimletter == "X" ~ "Investigative procedures",
+                             toimletter == "Y" ~ "Procurement of organs or tissue for transplantation",
+                             toimletter == "Z" ~ "General qualifiers pertaining to all other chapters")) %>%
+    left_join(toimL2, by = c("toim_level_2_code" = "code")) %>%
+    rename("toim_level_2" = "toim_label") %>%
+    mutate(toim2_plot_label = paste0(toim_level_2_code, " | ", toim_level_2)) %>%
+    mutate(toim2_plot_label = if_else(toim2_plot_label == "NA | NA", NA, toim2_plot_label))
+
+rm(toim_spliced)
+```
+
+## EALA: conservative or operative?
+
+```{r}
+# load in map
+EALA_map <- readRDS("./results/data/EALA_consv_oper_map.rds") %>%
+    rename(eala = pot_eala_koodi, eala_consv_oper = consv_oper) %>%
+    mutate(eala_consv_oper = ifelse(eala_consv_oper == "Konservatiivinen", "Conservative", "Operative"))
+
+# apply
+master_eala <- toim_levels %>%
+    left_join(EALA_map, by = c("primary_eala_code" = "eala"))
+
+# After our initial join there will be many unclassified EALAs
+# Let's check their labels
+nonmap_EALAs <- master_eala %>%
+    filter(is.na(eala_consv_oper)) %>%
+    select(primary_eala_code, primary_eala_label) %>%
+    group_by(primary_eala_code) %>%
+    slice(1)
+
+rm(toim_levels)
+```
+
+# Remove if no transfusion_episode_num
+
+Currently we have two people that end up in our master because of DRG table, without any meaningful data (even DRGs!)
+We'll remove those before saving.
+
+```{r}
+master <- master_eala %>%
+    filter(!is.na(transfusion_episode_num))
+
+rm(master_eala)
+```
+
+```{r}
+dupes <- master %>%
+    group_by(help_y) %>%
+    filter(n() > 1)
+```
+
+# Save
+
+```{r}
+saveRDS(master, "./results/data/master_blood_use_unclean.rds")
+```
+
+
+# Clean up
+
+While building data dictionaries, I realized the benefits of renaming the columns and dropping some that were only useful during the construction of other, more useful columns.
+
+```{r}
+selected_columns  <- c(
+"henkilotunnus",
+"sukupuoli_selite",
+"sex_groups",
+"age_at_transfusion",
+"age_groups",
+"height",
+"weight",
+"bmi",
+"bmi_h_w_time",
+"veri_alku_aika",
+"veri_loppu_aika",
+"alku_imputed",
+"loppu_imputed",
+"kuolinaika_pvm",
+"transfusion_episode_num",
+"episode_start",
+"episode_end",
+"transfusion_episode",
+"maarays_numero",
+"maarays_numero_alt",
+"help_y",
+"product_type",
+"ABO",
+"ABO_unit",
+"RhD",
+"RhD_unit",
+"Lab_Test_Label",
+"Stem_Cell_Transplantation",
+"veri_kiire",
+"veri_kuvaus",
+"veri_yhteenveto",
+"shjakso_numero",
+"primary_ICD_code",
+"primary_ICD_label",
+"ICD_level_1",
+"ICD_level_2",
+"primary_eala_code",
+"primary_eala_label",
+"eala_consv_oper",
+"primary_tulosyy",
+"primary_tulotapa",
+"primary_location",
+"place",
+"liittyy_operaatioon",
+"operaatio_tunnus",
+"paatoimenpide_koodi",
+"paatoimenpide_selite",
+"paatoimenpide_puoleisuus_selite",
+"paatoimenpide_lisakoodit",
+"toim_level_1",
+"toim_level_2",
+"ensisijainen_anestesiamuoto",
+"leikkaava_yksikko_koodi",
+"leikkaava_yksikko_selite",
+"leikkaussali",
+"preop_dg_koodi",
+"preop_dg_selite",
+"postop_dg_koodi",
+"postop_dg_selite",
+"kiireellisyys.y",
+"vastaanotto_hetki",
+"operaatio_pvm",
+"potilas_saliin",
+"potilas_salista",
+"veri_operaation_alusta_tuntia",
+"asa_luokka.y",
+"pot_eala_koodi.y",
+"pot_eala_selite.y",
+"pot_asiakasluokka_koodi",
+"pot_asiakasluokka_selite",
+"toimenpidekokonaisuus_numero",
+"hoitokontakti_numero",
+"palvelusuorite_numero",
+"toimenpide_koodi",
+"toimenpide_selite",
+"paatoimenpide",
+"toimenpide_lisakoodit",
+"uusinta_toimenpide",
+"toimenpide_hetki",
+"kiireellisyys.x",
+"veri_toim_jalkeen_tuntia",
+"asa_luokka.x",
+"tilaava_toimipiste_koodi",
+"tilaava_toimipiste_selite",
+"toteuttava_toimipiste_koodi",
+"toteuttava_toimipiste_selite",
+"kayntityyppi_koodi.x",
+"kayntityyppi_selite.x",
+"palvelusuorite_tyyppi_koodi",
+"palvelusuorite_tyyppi_selite",
+"palvelutuote_numero",
+"kontakti_vo_toimipiste_koodi",
+"kontakti_vo_toimipiste_selite",
+"kontakti_kayntityyppi_koodi",
+"kontakti_kayntityyppi_selite",
+"kontakti_alkuhetki",
+"kontakti_loppuhetki",
+"veri_kontaktin_alun_jalkeen_tuntia",
+"main_diag_code",
+"main_diag_label",
+"other_diag_code",
+"other_diag_label",
+"diag_syyt_code",
+"diag_syyt_label",
+"diag_oire_code",
+"diag_oire_label",
+"diag_tapaturmatyyppi_code",
+"diag_tapaturmatyyppi_label",
+"diag_ulkoinensyy_code",
+"diag_ulkoinensyy_label",
+"drg",
+"drg_alkuhetki",
+"drg_loppuhetki",
+"veri_drg_alusta_tuntia",
+"veri_drg_lopusta_tuntia",
+"hoiko_numero.y",
+"alkuhetki",
+"loppuhetki",
+"veri_kaynti_alusta_tuntia",
+"veri_kaynti_lopusta_tuntia",
+"varaustyyppi_koodi",
+"varaustyyppi_selite",
+"kayntityyppi_koodi.y",
+"kayntityyppi_selite.y",
+"paivakirurgia",
+"vo_toimipiste_koodi",
+"vo_toimipiste_nimi",
+"pot_eala_koodi",
+"pot_eala_selite",
+"paadg_koodi",
+"paadg_selite",
+"sivudiagnoosit",
+"tulotapa_koodi",
+"tulotapa_selite",
+"mista_tuli_koodi",
+"mista_tuli_selite",
+"tulosyy_selite",
+"lah_laitos_koodi",
+"lah_laitos_nimi",
+"jatkoh_laitos_nimi",
+"jatkohoito_koodi",
+"jatkohoito_selite",
+"ohjakso_numero",
+"shjakso_jarjn",
+"hoiko_numero.x",
+"kayntitili_numero",
+"kontakti_vaihe",
+"kayntitili_pot_eala_koodi",
+"kayntitili_pot_eala_selite",
+"ohjakso_pot_eala_koodi",
+"ohjakso_pot_eala_selite",
+"ohjakso_toimipiste_koodi",
+"ohjakso_toimipiste_selite",
+"ohjakso_tulokirjaus_selite",
+"ohjakso_lahtokirjaus_selite",
+"jatko_ohjakso_numero",
+"ohjakso_alkuhetki",
+"ohjakso_loppuhetki",
+"veri_oh_alusta_tuntia",
+"veri_oh_lopusta_tuntia",
+"shjakso_alkuhetki",
+"shjakso_loppuhetki",
+"kayntitili_alkuhetki",
+"kayntitili_loppuhetki",
+"shjakso_tulosyy_selite",
+"ohjakso_paadg_koodi",
+"ohjakso_paadg_selite",
+"ohjakso_sivudiagnoosit",
+"shjakso_tulotapa_koodi",
+"shjakso_tulotapa_selite",
+"shjakso_lah_laitos_koodi",
+"shjakso_lah_laitos_nimi",
+"shjakso_jatkohoito_laitos_nimi",
+"shjakso_jatkohoito_koodi",
+"shjakso_jatkohoito_selite",
+"pretransf_Hb",
+"pretransf_Hb_time",
+"pretransf_Hb_1h_buff",
+"pretransf_Hb_1h_buff_time",
+"posttransf_Hb_instant",
+"posttransf_Hb_instant_time",
+"posttransf_Hb",
+"posttransf_Hb_time",
+"pretransf_Trom",
+"pretransf_Trom_time",
+"pretransf_Trom_1h_buff",
+"pretransf_Trom_1h_buff_time",
+"posttransf_Trom_instant",
+"posttransf_Trom_instant_time",
+"posttransf_Trom",
+"posttransf_Trom_time",
+"pretransf_INR",
+"pretransf_INR_imputated",
+"pretransf_INR_time",
+"pretransf_INR_1h_buff",
+"pretransf_INR_1h_buff_imputated",
+"pretransf_INR_1h_buff_time",
+"posttransf_INR_instant",
+"posttransf_INR_instant_imputated",
+"posttransf_INR_instant_time",
+"posttransf_INR",
+"posttransf_INR_imputated",
+"posttransf_INR_time",
+"pretransf24_bleeding",
+"intratransf_bleeding",
+"posttransf24_bleeding",
+"preop_bleeding",
+"intraop_bleeding",
+"postop_bleeding",
+"postop_bleeding24",
+"postop_bleeding48",
+"postop_bleeding72",
+"postop_bleeding96",
+"postop_bleeding120",
+"urg_cats",
+"ICD2_plot_label",
+"toim2_plot_label"
+)
+
+master_selected <- master[, selected_columns]
+
+selected_new_names <- c(
+"id_patient",
+"sex_patient",
+"sex_group_patient",
+"age_patient",
+"age_group_patient",
+"height_patient",
+"weight_patient",
+"bmi_patient",
+"time_hwbmi_measured",
+"start_transf",
+"end_transf",
+"start_transf_was_imputed",
+"end_transf_was_imputed",
+"date_of_death",
+"id_transfep",
+"start_transfep",
+"end_transfep",
+"n_products_in_transfep",
+"id_order",
+"id_order_conflict",
+"id_product",
+"type_product",
+"abo_patient",
+"abo_product",
+"rhd_patient",
+"rhd_product",
+"label_test",
+"patient_has_received_stem_cell_transpl",
+"urg_transf",
+"descr_transf",
+"summary_transf",
+"id_trep",
+"code_primary_icd",
+"label_primary_icd",
+"label_icd_level_1",
+"label_icd_level_2",
+"code_primary_specialty",
+"label_primary_specialty",
+"conservative_operative",
+"primary_presentation_reason",
+"primary_presentation_method",
+"primary_location",
+"primary_location_category",
+"associated_w_or_event",
+"id_op",
+"code_main_proc",
+"label_main_proc",
+"code_main_proc_laterality",
+"code_main_proc_extras",
+"label_main_proc_level_1",
+"label_main_proc_level_2",
+"main_anesthesia",
+"code_operating_unit",
+"label_operating_unit",
+"or",
+"code_preop_icd",
+"label_preop_icd",
+"code_postop_icd",
+"label_postop_icd",
+"urg_op",
+"time_patient_received",
+"date_op",
+"start_or",
+"end_or",
+"timediff_hours_transf_op",
+"asa_class_opstbl",
+"code_specialty_op",
+"label_specialty_op",
+"code_patient_class_op",
+"label_patient_class_op",
+"id_proc_set_proctbl",
+"id_treatment_contact_proctbl",
+"id_service_provided_proctbl",
+"code_proc_proctbl",
+"label_proc_proctbl",
+"procedure_is_main_in_set_proctbl",
+"code_proc_extras_proctbl",
+"procedure_is_redo_proctbl",
+"time_proc_proctbl",
+"urg_proc_proctbl",
+"timediff_hours_transf_proc_proctbl",
+"asa_class_proctbl",
+"code_ordering_dept_proctbl",
+"label_ordering_dept_proctbl",
+"code_performing_dept_proctbl",
+"label_performing_dept_proctbl",
+"code_visit_type_proctbl",
+"label_visit_type_proctbl",
+"code_service_type_proctbl",
+"label_service_type_proctbl",
+"id_contact",
+"code_admitting_dept_ctbl",
+"label_admitting_dept_ctbl",
+"code_visit_type_ctbl",
+"label_visit_type_ctbl",
+"start_contact",
+"end_contact",
+"timediff_hours_transf_contact",
+"code_main_icd_contact",
+"label_main_icd_contact",
+"code_other_icd_contact",
+"label_other_icd_contact",
+"code_cause_icd_contact",
+"label_cause_icd_contact",
+"code_symptom_icd_contact",
+"label_symptom_icd_contact",
+"code_accident_icd_contact",
+"label_accident_icd_contact",
+"code_extcause_icd_contact",
+"label_extcause_icd_contact",
+"code_drg",
+"start_drg",
+"end_drg",
+"timediff_hours_transf_drg_start",
+"timediff_hours_transf_drg_end",
+"id_treatment_contact_treptbl",
+"start_trep",
+"end_trep",
+"timediff_hours_transf_trep_start",
+"timediff_hours_transf_trep_end",
+"code_scheduled_type",
+"label_scheduled_type",
+"code_visit_type_treptbl",
+"label_visit_type_treptbl",
+"trep_is_day_surgery",
+"code_admitting_dept_trep",
+"label_admitting_dept_trep",
+"code_specialty_trep",
+"label_specialty_trep",
+"code_icd_trep",
+"label_icd_trep",
+"code_secondary_icd",
+"code_presentation_method_trep",
+"label_presentation_method_trep",
+"code_where_from_trep",
+"label_where_from_trep",
+"presentation_reason_trep",
+"code_referring_dept_trep",
+"label_referring_dept_trep",
+"label_followup_dept_trep",
+"code_followup_trep",
+"label_followup_trep",
+"id_inpep",
+"order_trep",
+"id_treatment_contact_inpeptbl",
+"id_visit_account",
+"contact_phase",
+"code_specialty_visit_account",
+"label_specialty_visit_account",
+"code_specialty_inpep",
+"label_specialty_inpep",
+"code_dept_inpep",
+"label_dept_inpep",
+"inpep_start_log",
+"inpep_end_log",
+"id_seq_inpep",
+"start_inpep",
+"end_inpep",
+"timediff_hours_transf_inpep_start",
+"timediff_hours_transf_inpep_end",
+"start_trep_inpeptbl",
+"end_trep_inpeptbl",
+"start_visit_account",
+"end_visit_account",
+"presentation_reason_trep_inpeptbl",
+"code_icd_inpep",
+"label_icd_inpep",
+"code_secondary_icd_inpep",
+"code_presentation_method_trep_inpeptbl",
+"label_presentation_method_trep_inpeptbl",
+"code_referring_dept_trep_inpeptbl",
+"label_referring_dept_trep_inpeptbl",
+"label_followup_dept_trep_inpeptbl",
+"code_followup_trep_inpeptbl",
+"label_followup_trep_inpeptbl",
+"hb_pre",
+"time_hb_pre",
+"hb_pre_1h",
+"time_hb_pre_1h",
+"hb_post",
+"time_hb_post",
+"hb_post_transfep",
+"time_hb_post_transfep",
+"plt_pre",
+"time_plt_pre",
+"plt_pre_1h",
+"time_plt_pre_1h",
+"plt_post",
+"time_plt_post",
+"plt_post_transfep",
+"time_plt_post_transfep",
+"inr_pre",
+"inr_pre_was_imputed",
+"time_inr_pre",
+"inr_pre_1h",
+"inr_pre_1h_was_imputed",
+"time_inr_pre_1h",
+"inr_post",
+"inr_post_was_imputed",
+"time_inr_post",
+"inr_post_transfep",
+"inr_post_transfep_was_imputed",
+"time_inr_post_transfep",
+"bloodloss_pre",
+"bloodloss_intra",
+"bloodloss_post",
+"bloodloss_preop",
+"bloodloss_intraop",
+"bloodloss_postop",
+"bloodloss_postop_day1",
+"bloodloss_postop_day2",
+"bloodloss_postop_day3",
+"bloodloss_postop_day4",
+"bloodloss_postop_day5",
+"plot_urg_cats",
+"plot_icd_level_2_label",
+"plot_proc_level_2_label"
+)
+
+selected_renamed <- master_selected %>%
+    rename_with(~ selected_new_names, all_of(selected_columns))
+```
+
+
+```{r}
+saveRDS(selected_renamed, "./results/data/master_blood_use.rds")
+```

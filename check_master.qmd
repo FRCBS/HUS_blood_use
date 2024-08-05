@@ -1,0 +1,251 @@
+---
+title: "Investigate weirdnesses in master_blood_use"
+format: html
+---
+
+```{r}
+# Libraries n such
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(viridis)
+library(ggplot2)
+library(ggridges)
+library(lubridate)
+library(reshape2)
+library(gridExtra)
+library(grid)
+library(patchwork)
+library(RColorBrewer)
+library(ggpattern)
+library(ggalluvial)
+```
+
+# Load data
+
+```{r}
+master <- readRDS("./results/data/master_blood_use.rds")
+```
+
+# Pretransf Hb time
+
+```{r}
+ggplot(master, aes(x = pretransf_Hb_time)) +
+    geom_histogram(bins = 40000, fill = "deeppink", color = "deeppink") +
+    theme_minimal()
+
+ggsave("CHECK_pretransfHbtime_fill_color.png", bg = "white")
+
+test <- master %>%
+    filter(strftime(pretransf_Hb_time, format = "%H:%M:%S") != "11:01:00")
+
+ggsave("CHECK_pretransfHbtime_filtered.png", bg = "white")
+```
+
+> Turns out that there are many instances of this aberrant timestamp "11:01:00" in our data set, and because they are concentrated in 2021, this causes the binning to skew.
+
+> NB! While labbing I also learned something about geom_histogram:
+1. It's sensible visual for data distribution only at lower bin numbers.
+2. If we increase the bin number towards the (large) n of the data, the rendering fails if we don't use the color paramater (that outlines the bars).
+3. For these kinds of analyses we should default to geom_bar.
+
+# "loppuhetki"
+
+```{r}
+ggplot(master, aes(x = loppuhetki)) +
+    geom_histogram(bins = 100) +
+    theme_minimal()
+
+ggsave("CHECK_loppuhetki.png", bg = "white")
+
+ggplot(master, aes(x = loppuhetki)) +
+    geom_density() +
+    theme_minimal()
+
+ggsave("CHECK_loppuhetki_density.png", bg = "white")
+```
+
+> In the original summaries of data tables (kaynti, in this case), we see a very strange peak in 2021 and two troughs later in the data (around aug-sept). When we join this table to the transfusion records, the troughs apparantly drop off, but the peak remains. Let's first check if we can replicate the original histogram from the kaynti table.
+
+```{r}
+kaynti <- readRDS("./results/data/apotti_kaynti.rds")
+```
+
+```{r}
+ggplot(kaynti, aes(x = loppuhetki)) +
+    geom_histogram(bins = 100) +
+    theme_minimal()
+
+ggsave("CHECK_kaynti_loppuhetki.png", bg = "white")
+
+ggplot(kaynti, aes(x = loppuhetki)) +
+    geom_density() +
+    theme_minimal()
+
+ggsave("CHECK_kaynti_loppuhetki_density.png", bg = "white")
+```
+
+> Curiously, we find (from the density plot) that there are multiple troughs, the most prominent ones at aug-sept, but another in January (expected) and what looks to be April 2022.
+
+> Let's check if there's a difference in the `vo_toimipiste_nimi` between peaks and troughs.
+
+```{r}
+kaynti_Q2 <- kaynti %>%
+    filter(as.Date("2021-04-01") <= as.Date(loppuhetki) & as.Date(loppuhetki) < as.Date("2021-07-01"))
+
+kaynti_Q3 <- kaynti %>%
+    filter(as.Date("2021-07-01") <= as.Date(loppuhetki) & as.Date(loppuhetki) < as.Date("2021-09-01"))
+
+kaynti_Q3_2 <- kaynti %>%
+    filter(as.Date("2022-07-01") <= as.Date(loppuhetki) & as.Date(loppuhetki) < as.Date("2022-09-01"))
+```
+
+```{r}
+kaynti_Q3 <- kaynti %>%
+    filter(as.Date("2021-07-01") <= as.Date(loppuhetki) & as.Date(loppuhetki) < as.Date("2021-09-01"))
+
+ggplot(kaynti_Q3_2, aes(x = loppuhetki)) +
+    geom_histogram(bins = 100) +
+    theme_minimal()
+```
+
+> It seems that the troughs are actually in Jun-Jul-Aug, so this is very likely a holiday issue, but what explains the peak in Q2? Let's compare `vo_toimipiste_nimi` distributions between Q2 and Q3.
+
+```{r}
+# Calculate the counts for each class in 'vo_toimipiste'
+counts_Q2 <- table(kaynti_Q2$vo_toimipiste_nimi)
+counts_Q3 <- table(kaynti_Q3$vo_toimipiste_nimi)
+
+# Convert counts to proportions
+prop_Q2 <- prop.table(counts_Q2)
+prop_Q3 <- prop.table(counts_Q3)
+
+# Combine counts and proportions into a single dataframe
+comparison_df <- data.frame(
+  Class = union(names(counts_Q2), names(counts_Q3)),
+  Count_Q2 = sapply(union(names(counts_Q2), names(counts_Q3)), function(x) ifelse(x %in% names(counts_Q2), counts_Q2[x], 0)),
+  Count_Q3 = sapply(union(names(counts_Q2), names(counts_Q3)), function(x) ifelse(x %in% names(counts_Q3), counts_Q3[x], 0)),
+  Prop_Q2 = sapply(union(names(counts_Q2), names(counts_Q3)), function(x) ifelse(x %in% names(prop_Q2), prop_Q2[x], 0)),
+  Prop_Q3 = sapply(union(names(counts_Q2), names(counts_Q3)), function(x) ifelse(x %in% names(prop_Q3), prop_Q3[x], 0))
+)
+
+# Print the comparison dataframe
+print(comparison_df)
+```
+
+```{r}
+# Compute absolute differences in proportions for common classes
+comparison_df$Abs_Diff <- abs(comparison_df$Prop_Q2 - comparison_df$Prop_Q3)
+
+# Select the top 10 classes with the largest differences
+top10_diff <- comparison_df[order(-comparison_df$Abs_Diff), ][1:10, ]
+
+# Print the top 10 differences for inspection
+print(top10_diff)
+
+# Reshape data for ggplot
+top10_reshaped <- melt(top10_diff, id.vars = "Class", measure.vars = c("Prop_Q2", "Prop_Q3"), variable.name = "Dataset", value.name = "Prop")
+
+# Create bar plot for the top 10 differences
+ggplot(top10_reshaped, aes(x = Class, y = Prop, fill = Dataset)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Top 10 Class Differences in 'vo_toimipiste_nimi' Between Q2 and Q3", x = "Class", y = "Prop") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+> Findings: there are differences in many `vo_toimipiste`, but the top10 suggests that all elective/optional operations (proxied here by roentgen facilites) see much less action during the Summer (makes sense), which increases the proportional share of emergency departments.
+
+> But what happens in the Q2 peak relative to other quarters (outside troughs) in our master?
+
+```{r}
+master_Q2 <- master %>%
+    filter(as.Date("2021-04-01") <= as.Date(loppuhetki) & as.Date(loppuhetki) < as.Date("2021-07-01"))
+
+master_Q3 <- master %>%
+    filter(as.Date("2021-07-01") <= as.Date(loppuhetki) & as.Date(loppuhetki) < as.Date("2021-09-01"))
+``` 
+
+```{r}
+# Calculate the counts for each class in 'vo_toimipiste'
+counts_Q2_new <- table(master_Q2$vo_toimipiste_nimi)
+counts_Q3_new <- table(master_Q3$vo_toimipiste_nimi)
+
+# Convert counts to proportions
+prop_Q2_new <- prop.table(counts_Q2_new)
+prop_Q3_new <- prop.table(counts_Q3_new)
+
+# Combine counts and proportions into a single dataframe
+comparison_df <- data.frame(
+  Class = union(names(counts_Q2_new), names(counts_Q3_new)),
+  Count_Q2 = sapply(union(names(counts_Q2_new), names(counts_Q3_new)), function(x) ifelse(x %in% names(counts_Q2_new), counts_Q2_new[x], 0)),
+  Count_Q3 = sapply(union(names(counts_Q2_new), names(counts_Q3_new)), function(x) ifelse(x %in% names(counts_Q3_new), counts_Q3_new[x], 0)),
+  Prop_Q2 = sapply(union(names(counts_Q2_new), names(counts_Q3_new)), function(x) ifelse(x %in% names(prop_Q2_new), prop_Q2_new[x], 0)),
+  Prop_Q3 = sapply(union(names(counts_Q2_new), names(counts_Q3_new)), function(x) ifelse(x %in% names(prop_Q3_new), prop_Q3_new[x], 0)))
+
+# Compute absolute differences in proportions for common classes
+comparison_df$Abs_Diff <- abs(comparison_df$Prop_Q2 - comparison_df$Prop_Q3)
+
+# Select the top 10 classes with the largest differences
+top10_diff_new <- comparison_df[order(-comparison_df$Abs_Diff), ][1:10, ]
+
+# Print the top 10 differences for inspection
+print(top10_diff_new)
+
+top10_reshaped_new <- melt(top10_diff_new, id.vars = "Class", measure.vars = c("Prop_Q2", "Prop_Q3"), variable.name = "Dataset", value.name = "Prop")
+
+# Create bar plot for the top 10 differences
+ggplot(top10_reshaped_new, aes(x = Class, y = Prop, fill = Dataset)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Top 10 Class Differences in 'vo_toimipiste_nimi' Between Q2 and Q3", x = "Class", y = "Prop") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+> The results suggest that this phenomenon is entirely attributable to "excessive" use of roentgen facilities. Let's compare to Q2_2.
+
+```{r}
+master_Q2 <- master %>%
+    filter(as.Date("2021-04-01") <= as.Date(loppuhetki) & as.Date(loppuhetki) < as.Date("2021-07-01"))
+
+master_Q2_2 <- master %>%
+    filter(as.Date("2022-04-01") <= as.Date(loppuhetki) & as.Date(loppuhetki) < as.Date("2022-07-01"))
+```
+
+```{r}
+# Calculate the counts for each class in 'vo_toimipiste'
+counts_Q2_new <- table(master_Q2$vo_toimipiste_nimi)
+counts_Q3_new <- table(master_Q2_2$vo_toimipiste_nimi)
+
+# Convert counts to proportions
+prop_Q2_new <- prop.table(counts_Q2_new)
+prop_Q3_new <- prop.table(counts_Q3_new)
+
+# Combine counts and proportions into a single dataframe
+comparison_df <- data.frame(
+  Class = union(names(counts_Q2_new), names(counts_Q3_new)),
+  Count_Q2 = sapply(union(names(counts_Q2_new), names(counts_Q3_new)), function(x) ifelse(x %in% names(counts_Q2_new), counts_Q2_new[x], 0)),
+  Count_Q3 = sapply(union(names(counts_Q2_new), names(counts_Q3_new)), function(x) ifelse(x %in% names(counts_Q3_new), counts_Q3_new[x], 0)),
+  Prop_Q2 = sapply(union(names(counts_Q2_new), names(counts_Q3_new)), function(x) ifelse(x %in% names(prop_Q2_new), prop_Q2_new[x], 0)),
+  Prop_Q3 = sapply(union(names(counts_Q2_new), names(counts_Q3_new)), function(x) ifelse(x %in% names(prop_Q3_new), prop_Q3_new[x], 0)))
+
+# Compute absolute differences in proportions for common classes
+comparison_df$Abs_Diff <- abs(comparison_df$Prop_Q2 - comparison_df$Prop_Q3)
+
+# Select the top 10 classes with the largest differences
+top10_diff_new <- comparison_df[order(-comparison_df$Abs_Diff), ][1:10, ]
+
+# Print the top 10 differences for inspection
+print(top10_diff_new)
+
+top10_reshaped_new <- melt(top10_diff_new, id.vars = "Class", measure.vars = c("Prop_Q2", "Prop_Q3"), variable.name = "Dataset", value.name = "Prop")
+
+# Create bar plot for the top 10 differences
+ggplot(top10_reshaped_new, aes(x = Class, y = Prop, fill = Dataset)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Top 10 Class Differences in 'vo_toimipiste_nimi' Between Q2 and Q2_2", x = "Class", y = "Prop") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+> Still, it seems to be the roentgen.

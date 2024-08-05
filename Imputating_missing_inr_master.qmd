@@ -1,0 +1,334 @@
+---
+title: "Imputing missing INR measurements based on TT"
+    subtitle: "To be included as a separate script"
+author: "Elissa Peltola"
+date: today
+format: 
+  html:
+    code-fold: true
+self-contained: true
+---
+
+# Setup
+
+```{r}
+# Libraries
+library(dplyr)
+library(tidyr)
+source("./src/functions/helper_functions.R")
+```
+
+# Load the lab data
+
+```{r}
+if (!file.exists("./results/data/multilab_timelimit_INR_TT.rds")) {
+    # Labs
+    labs <- c("P -INR", "P -TT")
+    # Read the lab data
+    multilab1 <- readRDS("./results/data/multilab_labrat_aikaraja_1.rds")
+    multilab1 <- multilab1 %>% 
+        filter(tutkimus_lyhenne %in% labs)
+
+    multilab2 <- readRDS("./results/data/multilab_labrat_aikaraja_2.rds")
+    multilab2 <- multilab2 %>% 
+        filter(tutkimus_lyhenne %in% labs)
+
+    multilab_timelimit <- bind_rows(multilab1, multilab2)
+
+    rm(multilab1)
+    rm(multilab2)
+
+    # Filter further
+    multilab_timelimit <- multilab_timelimit %>%
+        mutate(tulos = as.numeric(tulos)) %>%
+        filter(!is.na(tulos)) %>%
+        select(henkilotunnus, tutkimus_lyhenne, naytteenottoaika, tulos, yksikko)
+    # Gives a warning 'NAs introduced by coercion' due to some 'tulos' being 'pyydetty' etc.
+    # These are set as NA.
+    saveRDS(multilab_timelimit, "./results/data/multilab_timelimit_INR_TT.rds")
+} else {
+    multilab_timelimit <- readRDS("./results/data/multilab_timelimit_INR_TT.rds")
+}
+```
+
+Ensure one observation per timestamp and ID:
+
+```{r}
+# Ensure one result per ID, timestamp, test: Take the avergae if multiple
+multilab_timelimit_filtered <- multilab_timelimit %>%
+    group_by(henkilotunnus, naytteenottoaika, tutkimus_lyhenne) %>%
+    mutate(
+        tulos = mean(tulos)
+    ) %>%
+    ungroup() %>%
+    distinct()
+```
+
+# Constructing the model to impute INR based on TT
+
+Get training data and data to be imputed:
+
+```{r}
+# Get data to be used in training the model: With both INR and TT measurements taken at the same time
+train_tt_inr <- multilab_timelimit_filtered %>%
+    group_by(henkilotunnus, naytteenottoaika) %>%
+    filter(n_distinct(tutkimus_lyhenne) > 1)
+
+# Get the TT's with missing INR
+missing_inr <- multilab_timelimit_filtered %>%
+    group_by(henkilotunnus, naytteenottoaika) %>%
+    filter(n_distinct(tutkimus_lyhenne) == 1) %>%
+    filter(tutkimus_lyhenne == "P -TT")
+
+# Modify training data to long format
+tt_inr_pivot <- train_tt_inr %>%
+    select(-c("yksikko")) %>%
+    pivot_wider(names_from = tutkimus_lyhenne, values_from = tulos) %>%
+    rename(all_of(c(P_TT = "P -TT", P_INR = "P -INR"))) %>%
+    group_by(P_INR) %>%
+    mutate(P_TT_mean = mean(P_TT),
+    P_TT_med = median(P_TT)) %>%
+    ungroup()
+
+nrow(tt_inr_pivot) # > 46k training data points
+nrow(missing_inr) # > 345k TT measurements without INR
+```
+
+Let's visualize the data:
+
+```{r}
+# linear
+p_lin <- ggplot(tt_inr_pivot, aes(y = P_INR)) +
+  geom_point(aes(x = P_TT), color="deeppink", alpha=0.4) +
+  geom_point(aes(x=P_TT_mean), color="black", alpha=0.7) +
+  labs(x = "P -TT", y = "P -INR") +
+  ggtitle("Linear: TT x INR") +
+  theme_minimal()
+
+# log
+p_log <- ggplot(tt_inr_pivot, aes(y = log(P_INR))) +
+  geom_point(aes(x = log(P_TT)), color="magenta", alpha=0.4) +
+  geom_point(aes(x = log(P_TT_mean)), color="black", alpha=0.7) +
+  labs(x = "P -TT", y = "P -INR") +
+  ggtitle("Logarithmic: TT x INR") +
+  theme_minimal()
+
+grobs <- grid.arrange(p_lin, p_log, ncol=2)
+
+# ggsave("TT_x_INR.png", grobs, width = 3000, height = 1500, bg = "white", units = "px")
+```
+
+Due to large number of data and P-INR being a discrete numerical variable, it is useful to train the model on center statistic instead of the complete data (to ensure smoothness). Thus, we will use P_TT_mean instead of P_TT in model fitting.
+
+## Find the best model to convert the TT measurements to INR
+
+The data seems to be exponential, so the model requires higher order terms or nonlinear transformations. Plotting the data in log-scale, a light curvature can be observed. Let's try a couple of different models:
+
+1. Linear regression with log-transformation on the data: $log(y) = a + b*log(x)$
+2. Second order nonlinear regression with log-transformation on the data: $log(y) = a + b*log(x) + c*log(x)^2$
+
+Fitting models to data with 5-fold cross-validation:
+
+```{r}
+# Models
+## Model 1: 
+model1  <- function(x, a, b){
+    return(exp(a + b*log(x)))
+}
+## Model 2:
+model2 <- function(x, a, b, c){
+    return(exp(a + b*log(x) + c*log(x)^2))
+}
+
+# RMSE:
+rmse <- function(y_pred, y_act){
+  return(sqrt(mean((y_pred - y_act)^2)))
+}
+
+# K(5)-fold Cross-Validation:
+k <- 5
+rmses <- matrix(, nrow=2, ncol=k)
+
+for(i in 1:k){
+    # Split data into train and test sets
+    start <- (i-1)*round(nrow(tt_inr_pivot)/k) + 1
+    end <- i*round(nrow(tt_inr_pivot)/k)
+    if(i==5) {
+        end = nrow(tt_inr_pivot)
+    }
+    tr_data <- tt_inr_pivot[-c(start:end), ]
+    tst_data <- tt_inr_pivot[start:end, ]
+    x_tst <- tst_data$P_TT_mean
+    # x_tst <- tst_data$P_TT
+    y_tst <- tst_data$P_INR
+
+    # Fitting data to the models:
+    fit1 <- nls(log(P_INR) ~ a + log(P_TT_mean)*b, data = tr_data, start = list(a = 0, b=0))
+    fit2 <- nls(log(P_INR) ~ a + b*log(P_TT_mean) + c*log(P_TT_mean)^2, data = tr_data, start = list(a = 2, b=-1, c=1))
+
+    # Extract the coefficients
+    coeff1 <- coef(fit1)
+    coeff2 <- coef(fit2)
+
+    # Predict
+    y_pred1 <- model1(x_tst, coeff1[1], coeff1[2])
+    y_pred2 <- model2(x_tst, coeff2[1], coeff2[2], coeff2[3])
+
+    rmses[1,i] <- rmse(y_pred1, y_tst)
+    rmses[2,i] <- rmse(y_pred2, y_tst)
+}
+
+print("RMSE's:")
+print(rowMeans(rmses))
+
+best_model <- which.min(rowMeans(rmses))
+print(paste0("The best model is: ", best_model))
+
+```
+
+The higher order model (Model 2) seems to work the best. Lets plot the models and see:
+
+```{r}
+# The inputs
+x <- tt_inr_pivot$P_TT
+# Fit the models with full data
+fit1 <- nls(log(P_INR) ~ a + log(P_TT_mean)*b, data = tt_inr_pivot, start = list(a = 0, b=0))
+fit2 <- nls(log(P_INR) ~ a + b*log(P_TT_mean) + c*log(P_TT_mean)^2, data = tt_inr_pivot, start = list(a = 2, b=-1, c=1))
+
+# Extract the coefficients
+coeff1 <- coef(fit1)
+coeff2 <- coef(fit2)
+# Predict
+y_pred1 <- model1(x, coeff1[1], coeff1[2])
+y_pred2 <- model2(x, coeff2[1], coeff2[2], coeff2[3])
+
+# Define the data to be plotted
+fitted_data <- data.frame(
+    y1 = y_pred1,
+    y2 = y_pred2,
+    P_TT = tt_inr_pivot$P_TT,
+    P_TT_mean = tt_inr_pivot$P_TT_mean,
+    P_INR = tt_inr_pivot$P_INR
+)
+
+# Convert TT measurements with missing INR to INR using model 2:
+x_missing <- missing_inr$tulos
+y_best <- model2(x_missing, coeff2[1], coeff2[2], coeff2[3])
+
+missing_INR_data <- data.frame(
+    TT_no_INR = x_missing,
+    INR_model2 = y_best
+)
+
+log_models <- ggplot(fitted_data, aes(x = log(P_TT))) +
+    geom_point(aes(x = log(P_TT), y = log(P_INR), color="grey70")) +
+    geom_line(aes(y = log(y1), color="orchid2"), size=1) +
+    geom_line(aes(y = log(y2), color="springgreen3"), size=1) +
+    geom_point(data = missing_INR_data, aes(x=log(TT_no_INR), y = log(INR_model2), color="skyblue3"), shape=17, size=2, alpha=0.2) +
+    geom_point(aes(x = log(P_TT_mean), y = log(P_INR), color="grey2"), alpha=0.5, size=0.5) +
+    scale_color_identity(guide = "legend",
+                        name = NULL,
+                        breaks = c("grey2", "grey70", "orchid2", "springgreen3", "skyblue3"),
+                        labels = c("Training data means", "Training data", "Model 1", "Model 2", "Predictions (M2)")) +
+    theme_minimal() +
+    ggtitle("Logarithmic: TT x INR models")
+    # ylim(0,2.1)
+# log_models
+lin_models <- ggplot(fitted_data, aes(x = P_TT)) +
+    geom_point(aes(x = P_TT, y = P_INR, color="grey70")) +
+    geom_line(aes(y = y1, color="orchid2"), size=1) +
+    geom_line(aes(y = y2, color="springgreen3"), size=1) +
+    geom_point(data = missing_INR_data, aes(x=TT_no_INR, y = INR_model2, color="skyblue3"), shape=17, size=2, alpha=0.2) +
+    geom_point(aes(x = P_TT_mean, y = P_INR, color="grey2"), alpha=0.5, size=0.5) +
+    scale_color_identity(guide = "legend",
+                        name = NULL,
+                        breaks = c("grey2", "grey70", "orchid2", "springgreen3", "skyblue3"),
+                        labels = c("Training data means", "Training data", "Model 1", "Model 2", "Predictions (M2)")) +
+    theme_minimal() +
+    ggtitle("Linear: TT x INR models")
+    # ylim(0,10)
+# lin_models
+grob_models <- grid.arrange(lin_models, log_models, ncol=2)
+# ggsave("TT_x_INR_Models.png", grob_models, width = 3000, height = 2000, bg = "white", units = "px")
+```
+
+# Converting TT to INR using Model 2
+
+Thus, since model 2 seems to fit the data well, we will use that to convert TT's to INR:
+
+```{r}
+# Fit the model
+fit2 <- nls(log(P_INR) ~ a + b*log(P_TT_mean) + c*log(P_TT_mean)^2, data = tt_inr_pivot, start = list(a = 2, b=-1, c=1))
+# Get coefficients
+coeff2 <- coef(fit2)
+a <- coeff2[1]
+b <- coeff2[2]
+c <- coeff2[3]
+
+# Create long dataset of the TT's with missing INR
+missing_inr_pivot <- missing_inr %>%
+    select(-c("yksikko")) %>%
+    pivot_wider(names_from = tutkimus_lyhenne, values_from = tulos) %>%
+    rename(P_TT = "P -TT")
+
+# Convert TT to INR
+missing_inr_pivot <- missing_inr_pivot %>%
+    mutate(INR = model2(P_TT, a, b, c))
+
+# INR values are not continuous -> Let's ensure they are:
+INR_categ <- sort(unique(tt_inr_pivot$P_INR))
+
+# Category 1.95 is represented twice. The one on index 25 is not equal to 1.95:
+INR_categ[25] # 1.95
+class(INR_categ[25]) # numeric
+typeof(INR_categ[25]) # double
+INR_categ[25] == 1.95 # FALSE
+
+# The one on index 24 is:
+INR_categ[24] # 1.95
+class(INR_categ[24]) # numeric
+typeof(INR_categ[24]) # double
+INR_categ[24] == 1.95 # TRUE
+
+# Let's remove the one on index 25:
+INR_categ <- INR_categ[-25]
+
+min_break <- min(INR_categ[2:length(INR_categ)] - INR_categ[1:(length(INR_categ)-1)]) # 0.05 decimal breaks
+
+# Round the INR accordingly
+missing_inr_pivot <- missing_inr_pivot %>%
+    mutate(P_INR = round(INR/min_break)*min_break)
+
+nrow(missing_inr_pivot) # >345k imputed INR values 
+```
+
+Let's ensure all values are reasonable and add a column to indicate that INR was imputed:
+
+```{r}
+missing_inr_pivot <- missing_inr_pivot %>%
+    mutate(
+        P_INR = ifelse(P_INR > 10, 10, P_INR),
+        imputated_INR = 1
+    )
+```
+
+Finally, let's create a table with all TT and INR values:
+
+```{r}
+tt_inr_all_pivot <- multilab_timelimit_filtered %>%
+    select(-c("yksikko")) %>%
+    pivot_wider(names_from = tutkimus_lyhenne, values_from = tulos) %>%
+    rename(all_of(c(P_TT = "P -TT", P_INR = "P -INR")))
+
+tt_inr_complete <- tt_inr_all_pivot %>%
+    left_join(missing_inr_pivot, by=c("henkilotunnus", "naytteenottoaika", "P_TT")) %>%
+    mutate(
+        P_INR = ifelse(is.na(P_INR.x), P_INR.y, P_INR.x),
+        imputated_INR = ifelse(is.na(imputated_INR), 0, imputated_INR)
+    ) %>%
+    select(-c(P_INR.x, P_INR.y, INR))
+
+nrow(tt_inr_complete) # > 479k INR measurements/imputed measurements in total
+
+saveRDS(tt_inr_complete, "./results/data/multilab_INR_TT_imputated_long.rds")
+```

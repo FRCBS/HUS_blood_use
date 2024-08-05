@@ -1,0 +1,2372 @@
+---
+title: "All results for the 'Blood Use in HUS' manuscript"
+author: "Esa Turkulainen"
+date: today
+format: 
+  html:
+    code-fold: true
+self-contained: true
+---
+
+```{r}
+# Libraries n such
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(viridis)
+library(ggplot2)
+library(ggridges)
+library(lubridate)
+library(reshape2)
+library(gridExtra)
+library(grid)
+library(patchwork)
+library(RColorBrewer)
+library(ggpattern)
+library(boot)
+
+set.seed(123)
+```
+
+# Load data
+
+```{r}
+master <- readRDS("./results/data/master_blood_use.rds")
+```
+
+# Remove our power user
+
+```{r}
+master <- master %>%
+    filter(id_patient != "02091_2348747")
+```
+
+# Time series descriptives
+
+## Intraday series
+
+### Intraday urgency (categories) and EALA (conservative vs operative)
+
+```{r}
+# urg
+pdf_ts_urgcat <- master %>%
+    mutate(hour = hour(start_transf),
+           date = as_date(start_transf),
+           weekday = wday(start_transf, week_start = 1),
+           week = week(start_transf),
+           monthday = day(start_transf),
+           month = month(start_transf),
+           quarter = quarter(start_transf)) %>%
+    mutate(date_hour = paste(as.character(date), as.character(hour)),
+           date_wday = paste(as.character(date), as.character(weekday)),
+           date_mday = paste(as.character(date), as.character(monthday))) %>%
+    filter(!is.na(plot_urg_cats)) %>%
+    group_by(date_hour, plot_urg_cats) %>%
+    mutate(dayhour_count = n()) %>%
+    group_by(plot_urg_cats, hour) %>%
+    summarise(median_count = median(dayhour_count),
+              mean_count = mean(dayhour_count)) %>%
+    mutate(max_scaled_mean = mean_count / max(mean_count)) %>%
+    ungroup()
+
+# urgcat data N
+urgcat_N <- master %>%
+    filter(!is.na(plot_urg_cats)) %>%
+    nrow() * 100 / nrow(master)
+
+# eala
+pdf_ts_ealas <- master %>%
+    mutate(hour = hour(start_transf),
+           date = as_date(start_transf),
+           weekday = wday(start_transf, week_start = 1),
+           week = week(start_transf),
+           monthday = day(start_transf),
+           month = month(start_transf),
+           quarter = quarter(start_transf)) %>%
+    mutate(date_hour = paste(as.character(date), as.character(hour)),
+           date_wday = paste(as.character(date), as.character(weekday)),
+           date_mday = paste(as.character(date), as.character(monthday))) %>%
+    filter(!is.na(conservative_operative)) %>%
+    group_by(date_hour, conservative_operative) %>%
+    mutate(dayhour_count = n()) %>%
+    group_by(conservative_operative, hour) %>%
+    summarise(median_count = median(dayhour_count),
+              mean_count = mean(dayhour_count)) %>%
+    mutate(max_scaled_mean = mean_count / max(mean_count)) %>%
+    ungroup()
+
+# eala_cat N
+eala_N <- master %>%
+    filter(!is.na(conservative_operative)) %>%
+    nrow() * 100 / nrow(master)
+```
+
+#### Figure 2 | Part A
+
+```{r}
+urg_cat_colors = c("Elective" = "#00BFB2", "Urgent" = "#e7298a")
+eala_colors <- c("Conservative" = "#342e37", "Operative" = "#e6ab02")
+
+urg_less_cat_plot <- ggplot(data = pdf_ts_urgcat %>% filter(!(plot_urg_cats %in% c("Organ transplant", "Special resource requirement"))), 
+                            aes(x = hour, y = max_scaled_mean, color = plot_urg_cats)) +
+    geom_line(size = 1.7) +
+    theme_minimal() +
+    labs(y = "Relative use",
+         x = "Hour of day",
+         color = "Urgency:") + 
+    scale_color_manual(values = urg_cat_colors) + 
+    theme(legend.position = "top")
+
+eala_cat_plot <- ggplot(data = pdf_ts_ealas, aes(x = hour, y = max_scaled_mean, color = conservative_operative)) +
+    geom_line(size = 1.4) +
+    theme_minimal() +
+    labs(y = "Relative use",
+         x = "Hour of day",
+         color = "Specialty:") + 
+    scale_color_manual(values = eala_colors) + 
+    theme(legend.position = "top")
+```
+
+```{r}
+# Combine using patchwork
+urg_less_cat_plot / eala_cat_plot + plot_layout(axes = "collect") & theme(legend.position = "top")
+
+ggsave("./results/manuscript1_plots/Figure 2 A.png", width = 2400, height = 1500, units = "px", bg = "white")
+ggsave("./results/manuscript1_plots/svg/Figure 2 A.svg", width = 2400, height = 1500, units = "px", bg = "white")
+```
+
+
+## Yearly series (52 weeks)
+
+### Urgency & EALA
+
+```{r}
+# urg
+pdf_ts_year_urgcat <- master %>%
+    mutate(hour = hour(start_transf),
+           date = as_date(start_transf),
+           weekday = wday(start_transf, week_start = 1),
+           week = week(start_transf),
+           monthday = day(start_transf),
+           month = month(start_transf),
+           quarter = quarter(start_transf),
+           year = year(start_transf)) %>%
+    mutate(date_hour = paste(as.character(date), as.character(hour)),
+           date_wday = paste(as.character(date), as.character(weekday)),
+           date_mday = paste(as.character(date), as.character(monthday))) %>%
+    filter(!is.na(plot_urg_cats)) %>%
+    group_by(year, week, plot_urg_cats) %>%
+    mutate(week_count = n()) %>%
+    group_by(plot_urg_cats, week) %>%
+    summarise(median_count = median(week_count),
+              mean_count = mean(week_count),
+              first_week_count = first(week_count),
+              second_week_count = last(week_count)) %>%
+    mutate(max_scaled_mean = mean_count / max(mean_count)) %>%
+    ungroup() %>%
+    filter(week != 53)
+# eala
+pdf_ts_year_eala <- master %>%
+    mutate(hour = hour(start_transf),
+           date = as_date(start_transf),
+           weekday = wday(start_transf, week_start = 1),
+           week = week(start_transf),
+           monthday = day(start_transf),
+           month = month(start_transf),
+           quarter = quarter(start_transf),
+           year = year(start_transf)) %>%
+    mutate(date_hour = paste(as.character(date), as.character(hour)),
+           date_wday = paste(as.character(date), as.character(weekday)),
+           date_mday = paste(as.character(date), as.character(monthday))) %>%
+    filter(!is.na(conservative_operative)) %>%
+    group_by(year, week, conservative_operative) %>%
+    mutate(week_count = n()) %>%
+    group_by(conservative_operative, week) %>%
+    summarise(median_count = median(week_count),
+              mean_count = mean(week_count)) %>%
+    mutate(max_scaled_mean = mean_count / max(mean_count)) %>%
+    ungroup() %>%
+    filter(week != 53)
+```
+
+#### Supplement Figure S2
+
+```{r}
+urg_cat_colors = c("Elective" = "#00BFB2", "Urgent" = "#e7298a")
+eala_colors <- c("Conservative" = "#342e37", "Operative" = "#e6ab02")
+
+month <- seq(as.Date("2021-01-01"), 
+             as.Date("2021-12-01"), 
+             by = "1 month")
+
+month_numeric <- lubridate::yday(month) / 365 * 52 + 1
+month_label <- lubridate::month(month, label = TRUE)
+
+month_numeric <- lubridate::yday(month) / 365 * 52 + 1
+month_label <- lubridate::month(month, label = TRUE)
+
+urg_less_weekly_plot <- ggplot(data = pdf_ts_year_urgcat %>% filter(!(plot_urg_cats %in% c("Organ transplant", "Special resource requirement"))), aes(x = week, y = max_scaled_mean, color = plot_urg_cats)) +
+    geom_line(size = 1.4) +
+    labs(y = "Relative use",
+         x = "Weeks with month labels",
+         color = "Urgency:") + 
+    scale_color_manual(values = urg_cat_colors) + 
+    theme_minimal() +
+    theme(legend.position = "bottom") +
+    scale_x_continuous(breaks = month_numeric, 
+                    labels = month_label)
+
+eala_weekly_plot <- ggplot(data = pdf_ts_year_eala, aes(x = week, y = max_scaled_mean, color = conservative_operative)) +
+    geom_line(size = 1.4) +
+    theme_minimal() +
+    labs(y = "Relative use",
+         x = "Weeks with month labels",
+         color = "Specialty:") + 
+    scale_color_manual(values = eala_colors) + 
+    theme(legend.position = "bottom") +
+    scale_x_continuous(breaks = month_numeric, 
+                    labels = month_label)
+```
+
+```{r}
+# Combine using patchwork
+urg_less_weekly_plot / eala_weekly_plot + plot_layout(axes = "collect") & theme(legend.position = "top")
+
+ggsave("./results/manuscript1_plots/S2.png", width = 2400, height = 1500, units = "px", bg = "white")
+ggsave("./results/manuscript1_plots/svg/S2.svg", width = 2400, height = 1500, units = "px", bg = "white")
+```
+
+# Urgency categories
+
+## Figure 3 | Part B
+
+```{r}
+urgs <- master %>%
+    filter(!is.na(urg_op)) %>%
+    group_by(urg_op) %>%
+    mutate(distinct_episodes_per_urg = n_distinct(id_transfep)) %>%
+    mutate(urg_n = n()) %>%
+    ungroup() %>%
+    mutate(urg_pct = urg_n / n()) %>%
+    mutate(urg_per_epis = urg_n / distinct_episodes_per_urg) %>%
+    mutate(urg_label = case_when(
+        urg_op == "Violetti < 2 h" ~ "2 h",
+        urg_op == "Punainen < 6 h" ~ "6 h",
+        urg_op == "Oranssi < 24 h" ~ "24 h",
+        urg_op == "Keltainen < 48 h" ~ "48 h",
+        urg_op == "Vihreä < 7 vrk" ~ "7 d",
+        urg_op == "Sininen Elinsiirtokirurgia" ~ "Organ transpl.",
+        urg_op == "Ruskea erityisresurssia vaativa" ~ "Special req.",
+        urg_op == "LP I" ~ "30 d",
+        urg_op == "LP II" ~ "90 d",
+        urg_op == "LP III" ~ "180 d"
+        )
+    ) %>%
+    select(urg_label, distinct_episodes_per_urg, urg_n, urg_pct, urg_per_epis) %>%
+    distinct() %>%
+    mutate(urg_pct_epis = urg_per_epis / sum(urg_per_epis)) %>%
+    arrange(desc(urg_n))
+
+urg_order <- c("2 h", "6 h", "24 h", "48 h", "7 d", "Organ transpl.", "Special req.", "30 d", "90 d", "180 d")
+
+urg_N <- master %>%
+    filter(!is.na(urg_op)) %>%
+    nrow() * 100 / nrow(master)
+
+urg_long <- urgs %>%
+    pivot_longer(cols = c("urg_pct", "urg_pct_epis"), names_to = "pct_type", values_to = "pct") %>%
+    mutate(pct_type = ifelse(pct_type == "urg_pct", "Total", "Transfusion episodes")) %>%
+    mutate(pct_type = factor(pct_type, levels = c("Total", "Transfusion episodes"))) %>%
+    mutate(urg_label = factor(urg_label, levels = urg_order))
+
+ggplot(urgs, aes(y = urg_pct, x = factor(urg_label, levels = urg_order), fill = urg_per_epis)) +
+    geom_bar(position = "dodge", stat = "identity") +
+    geom_text(aes(label = format(urg_n, big.mark = ","), x = urg_label, y = urg_pct + 0.025)) +
+    scale_fill_gradient(low = "#fdebf4", high = "#E7298A", name = "Average units per episode") +
+    theme_minimal() +
+    labs(x = "Urgency", y = "Percent of OR transfusions") +
+    theme(legend.position = "bottom") +
+    guides(fill = guide_colorbar(barwidth = 20))
+
+ggsave("./results/manuscript1_plots/Figure 3 B.png", width = 3000, height = 1400, units = "px", bg = "white")
+ggsave("./results/manuscript1_plots/svg/Figure 3 B.svg", width = 3000, height = 1400, units = "px", bg = "white")
+
+# % of elective category OR transf
+master %>%
+    filter(!is.na(urg_op)) %>%
+    mutate(elec_TRUE = urg_op %in% c("LP I", "LP II", "LP III")) %>%
+    summarise(elec_rate = sum(elec_TRUE) / n())
+# % of u24 urgency in OR transf
+master %>%
+    filter(!is.na(urg_op)) %>%
+    mutate(urg_TRUE = urg_op %in% c("Violetti < 2 h", "Punainen < 6 h", "Oranssi < 24 h")) %>%
+    summarise(urg_rate = sum(urg_TRUE) / n())
+# % of organt transplant
+master %>%
+    mutate(org_TRUE = urg_op == "Sininen Elinsiirtokirurgia") %>%
+    summarise(org_rate = sum(org_TRUE, na.rm = T) / n())
+# % of organt transplant among OR transf
+master %>%
+    filter(!is.na(urg_op)) %>%
+    mutate(org_TRUE = urg_op == "Sininen Elinsiirtokirurgia") %>%
+    summarise(org_rate = sum(org_TRUE) / n())
+# % of urgent from OR
+sum(urgs[c(1, 3, 4, 5, 7, 9, 10), "urg_n"]) / sum(urgs$urg_n)
+# massive transfusions
+master %>%
+    group_by(id_transfep) %>%
+    mutate(massive = n() > 9) %>%
+    ungroup() %>%
+    summarise(massive_rate = sum(massive) / n())
+
+# Results computed over
+100 * sum(urgs$urg_n) / nrow(master) #%
+# of units
+```
+
+# Desciptives table
+
+## Other stats outside (or for) table
+
+```{r}
+# N of product types
+prods <- master %>%
+    filter(!is.na(type_product)) %>%
+    select(type_product) # 160 NA
+nRBC <- sum(prods$type_product == "RBC")
+nPLT <- sum(prods$type_product == "Platelets")
+nPLAS <- sum(prods$type_product == "Plasma")
+
+# radiatedRBC
+radiatedRBC <- c("E3847V00", "E7673V00", "A0092VA0", "A0092VB0")
+nRadiatedRBC <- master %>%
+    filter(veri_admin_prod %in% radiatedRBC) %>%
+    nrow()
+
+## Length of hospital stay from apotti_osastohoito
+shjakso_lengths <- difftime(master$end_trep_inpeptbl, master$start_trep_inpeptbl, units = "days")
+ohjakso_lengths <- difftime(master$end_inpep, master$start_inpep, units = "days")
+median(shjakso_lengths, na.rm = T) # median for shjakso: 9.77 days
+mean(shjakso_lengths, na.rm = T) # mean for shjakso: 17.84 days
+median(ohjakso_lengths, na.rm = T) # median for ohjakso: 1.3 days
+quantile(ohjakso_lengths, probs = c(0.25), na.rm = T) # Q25 for ohjakso: 0.39 days (9h22min)
+quantile(ohjakso_lengths, probs = c(0.75), na.rm = T) # Q75 for ohjakso: 5.12 days
+mean(ohjakso_lengths, na.rm = T) # mean for ohjakso: 4.84 days
+
+## Length of hospital stay from apotti_osastohoito WOMEN
+master_women <- master[master$sex_patient == "Nainen", ]
+ohjakso_lengths_women <- difftime(master_women$end_inpep, master_women$start_inpep, units = "days")
+median(ohjakso_lengths_women, na.rm = T) # median for ohjakso: 1.38
+quantile(ohjakso_lengths_women, probs = c(0.25), na.rm = T) # Q25 for ohjakso: 0.38 days (9h7min)
+quantile(ohjakso_lengths_women, probs = c(0.75), na.rm = T) # Q75 for ohjakso: 4.86 days
+
+## Length of hospital stay from apotti_osastohoito WOMEN
+master_men <- master[master$sex_patient == "Mies", ]
+ohjakso_lengths_men <- difftime(master_men$end_inpep, master_men$start_inpep, units = "days")
+median(ohjakso_lengths_men, na.rm = T) # median for ohjakso: 1.24
+quantile(ohjakso_lengths_men, probs = c(0.25), na.rm = T) # Q25 for ohjakso: 0.4 days (9h36min)
+quantile(ohjakso_lengths_men, probs = c(0.75), na.rm = T) # Q75 for ohjakso: 5.69 days
+
+# RBC episodes
+master %>%
+    group_by(id_transfep) %>%
+    mutate(nRBC = sum(type_product == "RBC")) %>%
+    filter(nRBC > 0) %>%
+    mutate(single = n() == 1) %>%
+    slice(1) %>%
+    ungroup() %>%
+    summarise(singles = sum(single), singlerate = sum(single) / n())
+
+# Plat episodes
+master %>%
+    group_by(id_transfep) %>%
+    mutate(nplat = sum(type_product == "Platelets")) %>%
+    filter(nplat > 0) %>%
+    mutate(single = n() == 1) %>%
+    slice(1) %>%
+    ungroup() %>%
+    summarise(singles = sum(single), singlerate = sum(single) / n())
+
+```
+
+## Table 1
+
+Currently our columns are "by sex".
+
+```{r}
+# Initialize table
+table1 <- data.frame(descriptive = character(0), 
+                     subgroup = character(0),
+                     overall = numeric(0), overall_p = numeric(0), o_Q25 = numeric(0), o_Q75 = numeric(0),
+                     men = numeric(0), men_p = numeric(0), men_Q25 = numeric(0), men_Q75 = numeric(0),
+                     women = numeric(0), women_p = numeric(0), women_Q25 = numeric(0), women_Q75 = numeric(0))
+
+```
+
+## Number of transfusions
+
+```{r}
+# Number of transfusions total
+n_transf <- nrow(master)
+
+# By sex
+n_transf_women <- nrow(master %>% filter(sex_patient == "Nainen"))
+n_transf_men <- nrow(master %>% filter(sex_patient == "Mies")) 
+
+table1 <- bind_rows(table1, 
+                    data.frame(descriptive = "Number of transfusions",
+                               subgroup = NA,
+                               overall = n_transf, overall_p = 100.0, o_Q25 = NA, o_Q75 = NA,
+                               men = n_transf_men, men_p = 100 * n_transf_men / n_transf, men_Q25 = NA, men_Q75 = NA,
+                               women = n_transf_women, women_p = 100 * n_transf_women / n_transf, women_Q25 = NA, women_Q75 = NA))
+```
+
+## Number of transfusion episodes
+
+```{r}
+# Number of transfusion episodes total
+n_epis <- n_distinct(master$id_transfep)
+
+# By sex
+n_epis_women <- n_distinct(master[master$sex_patient == "Nainen", ]$id_transfep)
+n_epis_men <- n_distinct(master[master$sex_patient == "Mies", ]$id_transfep)
+
+table1 <- bind_rows(table1, 
+                    data.frame(descriptive = "Number of transfusion episodes",
+                               subgroup = NA,
+                               overall = n_epis, overall_p = 100.0, o_Q25 = NA, o_Q75 = NA,
+                               men = n_epis_men, men_p = 100 * n_epis_men / n_epis, men_Q25 = NA, men_Q75 = NA,
+                               women = n_epis_women, women_p = 100 * n_epis_women / n_epis, women_Q25 = NA, women_Q75 = NA))
+```
+
+## Number of people
+
+```{r}
+# Number of unique persons total
+n_indv <- n_distinct(master$id_patient); print(n_indv)
+# By sex
+n_indv_women <- length(unique(master[master$sex_patient == "Nainen", ]$id_patient))
+n_indv_men <- length(unique(master[master$sex_patient == "Mies", ]$id_patient))
+
+table1 <- bind_rows(table1, 
+                    data.frame(descriptive = "Number of patients", 
+                               subgroup = NA,
+                               overall = n_indv, overall_p = 100.0, o_Q25 = NA, o_Q75 = NA,
+                               men = n_indv_men, men_p = 100 * n_indv_men / n_indv, men_Q25 = NA, men_Q75 = NA,
+                               women = n_indv_women, women_p = 100 * n_indv_women / n_indv, women_Q25 = NA, women_Q75 = NA))
+```
+
+## Age at transfusion
+
+```{r}
+# Age at transfusion
+to_agetables <- master %>%
+    group_by(id_patient, age_group_patient) %>%
+    slice(1) %>%
+    ungroup()
+
+agegr_women <- to_agetables %>% filter(sex_patient == "Nainen")
+agegr_men <- to_agetables %>% filter(sex_patient == "Mies")
+
+# Overall
+transf_ages <- table(to_agetables$age_group_patient)
+transf_ages_p <- transf_ages / sum(transf_ages)
+# By sex
+transf_ages_women <- table(agegr_women$age_group_patient)
+transf_ages_women_p <- transf_ages_women / sum(transf_ages_women)
+transf_ages_men <- table(agegr_men$age_group_patient)
+transf_ages_men_p <- transf_ages_men / sum(transf_ages_men)
+
+
+agegr_df <- data.frame(descriptive = "Age groups",
+                       subgroup = names(transf_ages),
+                       overall = as.numeric(transf_ages), overall_p = as.numeric(transf_ages_p), o_Q25 = NA, o_Q75 = NA,
+                       men = as.numeric(transf_ages_men), men_p = as.numeric(transf_ages_men_p), men_Q25 = NA, men_Q75 = NA,
+                       women = as.numeric(transf_ages_women), women_p = as.numeric(transf_ages_women_p), women_Q25 = NA, women_Q75 = NA)
+
+# Median age overall (+ IQR)
+md_age <- median(to_agetables$age_patient)
+qs_age <- quantile(to_agetables$age_patient, probs = c(0.25, 0.75))
+# By sex
+# Women
+md_age_women <- median(to_agetables[to_agetables$sex_patient == "Nainen", ]$age_patient)
+qs_age_women <- quantile(to_agetables[to_agetables$sex_patient == "Nainen", ]$age_patient, probs = c(0.25, 0.75))
+# Men
+md_age_men <- median(to_agetables[to_agetables$sex_patient == "Mies", ]$age_patient)
+qs_age_men <- quantile(to_agetables[to_agetables$sex_patient == "Mies", ]$age_patient, probs = c(0.25, 0.75))
+
+mdage_df <- data.frame(descriptive = "Age at transfusion (median, IQR)",
+                       subgroup = NA,
+                       overall = md_age, overall_p = NA, o_Q25 = qs_age[1], o_Q75 = qs_age[2],
+                       men = md_age_men, men_p = NA, men_Q25 = qs_age_men[1], men_Q75 = qs_age_men[2],
+                       women = md_age_men, women_p = NA, women_Q25 = qs_age_women[1], women_Q75 = qs_age_women[2])
+
+table1 <- bind_rows(table1, agegr_df, mdage_df)
+```
+
+## Number of transfusions per patients
+
+Grouped by product type
+
+```{r}
+# Number of transfusions per person
+transfused_units <- master %>%
+    group_by(id_patient, sex_patient, type_product) %>%
+    summarise(n_transfused = n()) %>%
+    filter(!is.na(type_product))
+
+### RBC
+rbcs <- transfused_units %>% 
+    filter(type_product == "RBC") 
+md_rbc <- median(rbcs$n_transfused)
+qs_rbc <- quantile(rbcs$n_transfused, probs = c(0.25, 0.75))
+## By sex
+# Women
+rbcs_w <- transfused_units %>% 
+    filter(type_product == "RBC" & sex_patient == "Nainen") 
+md_rbc_w <- median(rbcs_w$n_transfused)
+qs_rbc_w <- quantile(rbcs_w$n_transfused, probs = c(0.25, 0.75))
+# Men
+rbcs_m <- transfused_units %>% 
+    filter(type_product == "RBC" & sex_patient == "Mies") 
+md_rbc_m <- median(rbcs_m$n_transfused)
+qs_rbc_m <- quantile(rbcs_m$n_transfused, probs = c(0.25, 0.75))
+
+### Platelets
+plats <- transfused_units %>% 
+    filter(type_product == "Platelets") 
+md_plats <- median(plats$n_transfused)
+qs_plats <- quantile(plats$n_transfused, probs = c(0.25, 0.75))
+## By sex
+# Women
+plats_w <- transfused_units %>% 
+    filter(type_product == "Platelets" & sex_patient == "Nainen") 
+md_plats_w <- median(plats_w$n_transfused)
+qs_plats_w <- quantile(plats_w$n_transfused, probs = c(0.25, 0.75))
+# Men
+plats_m <- transfused_units %>% 
+    filter(type_product == "Platelets" & sex_patient == "Mies") 
+md_plats_m <- median(plats_m$n_transfused)
+qs_plats_m <- quantile(plats_m$n_transfused, probs = c(0.25, 0.75))
+
+### Plasma
+plasms <- transfused_units %>% 
+    filter(type_product == "Plasma") 
+md_plasms <- median(plasms$n_transfused)
+qs_plasms <- quantile(plasms$n_transfused, probs = c(0.25, 0.75))
+## By sex
+# Women
+plasms_w <- transfused_units %>% 
+    filter(type_product == "Plasma" & sex_patient == "Nainen") 
+md_plasms_w <- median(plasms_w$n_transfused)
+qs_plasms_w <- quantile(plasms_w$n_transfused, probs = c(0.25, 0.75))
+# Men
+plasms_m <- transfused_units %>% 
+    filter(type_product == "Plasma" & sex_patient == "Mies") 
+md_plasms_m <- median(plasms_m$n_transfused)
+qs_plasms_m <- quantile(plasms_m$n_transfused, probs = c(0.25, 0.75))
+
+num_by_product_df <- data.frame(descriptive = rep("Per patient (median, IQR)", 3),
+                                subgroup = c("RBC", "Platelet", "Plasma"),
+                                overall = c(md_rbc, md_plats, md_plasms), overall_p = NA, o_Q25 = c(qs_rbc[1], qs_plats[1], qs_plasms[1]), o_Q75 = c(qs_rbc[2], qs_plats[2], qs_plasms[2]),
+                                men = c(md_rbc_m, md_plats_m, md_plasms_m), men_p = NA, men_Q25 = c(qs_rbc_m[1], qs_plats_m[1], qs_plasms_m[1]), men_Q75 = c(qs_rbc_m[2], qs_plats_m[2], qs_plasms_m[2]),
+                                women = c(md_rbc_w, md_plats_w, md_plasms_w), women_p = NA, women_Q25 = c(qs_rbc_w[1], qs_plats_w[1], qs_plasms_w[1]), women_Q75 = c(qs_rbc_w[2], qs_plats_w[2], qs_plasms_w[2]))
+
+table1 <- bind_rows(table1, num_by_product_df)
+```
+
+## Number of transfusions by EALA
+
+```{r}
+ealas <- unique(master$label_primary_specialty)
+transfused_eala <- master %>%
+    mutate(eala_groups = case_when(
+        label_primary_specialty %in% grep("Akuutti", ealas, value = T) ~ "Emergency medicine",
+        label_primary_specialty == "20G Kirurgia, gastroenterologia" ~ "Surgery, gastroenterology",
+        label_primary_specialty %in% grep("orto", ealas, value = T, ignore.case = T) ~ "Orthopedia",
+        label_primary_specialty %in% grep("nefro", ealas, value = T, ignore.case = T) ~ "Nephrology",
+        label_primary_specialty %in% grep("hema", ealas, value = T, ignore.case = T) ~ "Hematology",
+        label_primary_specialty %in% grep("verisuoni", ealas, value = T, ignore.case = T) ~ "Surgery, vascular",
+        label_primary_specialty %in% grep("hema", ealas, value = T, ignore.case = T) ~ "Hematology",
+        label_primary_specialty %in% grep("gastro", ealas, value = T, ignore.case = T) & label_primary_specialty != "20G Kirurgia, gastroenterologia" ~ "Gastroenterology",
+        label_primary_specialty %in% grep("sydänki", ealas, value = T, ignore.case = T) | label_primary_specialty %in% grep("sydän-", ealas, value = T, ignore.case = T) ~ "Surgery, cardiac",
+        label_primary_specialty %in% grep("synn", ealas, value = T, ignore.case = T) ~ "Obstetric",
+        label_primary_specialty %in% grep("yleissi", ealas, value = T, ignore.case = T) ~ "General internal medicine",
+        label_primary_specialty %in% c("10 Sisätaudit", "Sisätaudit") ~ "Internal medicine",
+        label_primary_specialty %in% grep("elinsiirtokirurgia", ealas, value = T, ignore.case = T) ~ "Surgery, transplant",
+        label_primary_specialty %in% grep("naistentaudit", ealas, value = T, ignore.case = T) ~ "Gynecology",
+        label_primary_specialty %in% grep("plastiikka", ealas, value = T, ignore.case = T) ~ "Surgery, plastic",
+        label_primary_specialty %in% grep("urolo", ealas, value = T, ignore.case = T) ~ "Urology",
+        label_primary_specialty %in% grep("traumat", ealas, value = T, ignore.case = T) ~ "Surgery, traumatology",
+        label_primary_specialty %in% grep("kardio", ealas, value = T, ignore.case = T) ~ "Cardiology",
+        label_primary_specialty %in% grep("syöpätaudit ja sädehoito", ealas, value = T, ignore.case = T) ~ "Cancers, radiotherapy",
+        label_primary_specialty %in% grep("thorax", ealas, value = T, ignore.case = T) ~ "Surgery, thoracic",
+        label_primary_specialty %in% grep("neurokir", ealas, value = T, ignore.case = T) ~ "Surgery, neuro",
+        label_primary_specialty %in% grep("infektiosair", ealas, value = T, ignore.case = T) ~ "Infectious diseases",
+        label_primary_specialty %in% grep("maksa", ealas, value = T, ignore.case = T) ~ "Surgery, liver",
+        label_primary_specialty == "Sydänsiirrot" ~ "Heart transplants",
+        TRUE ~ "Other"
+    )) %>%
+    group_by(eala_groups) %>%
+    mutate(eala_sum = n()) %>%
+    mutate(eala_pct = eala_sum / nrow(master)) %>%
+    group_by(sex_patient) %>%
+    mutate(sex_n = n()) %>%
+    group_by(eala_groups, sex_patient) %>%
+    mutate(eala_sex_sum = n()) %>%
+    mutate(eala_sex_pct = eala_sex_sum / sex_n) %>%
+    select(eala_groups, eala_sum, eala_pct, sex_patient, sex_n, eala_sex_sum, eala_sex_pct) %>%
+    ungroup() %>%
+    distinct() %>%
+    arrange(desc(eala_sum))
+
+eala_table <- data.frame(descriptive = rep("EALAs", 15),
+                         subgroup = unique(transfused_eala$eala_groups)[1:15],
+                         overall = unique(transfused_eala$eala_sum)[1:15],
+                         overall_p = unique(transfused_eala$eala_pct)[1:15],
+                         o_Q25 = NA,
+                         o_Q75 = NA,
+                         men = transfused_eala[transfused_eala$sex_patient == "Mies", ]$eala_sex_sum[1:15],
+                         men_p = transfused_eala[transfused_eala$sex_patient == "Mies", ]$eala_sex_pct[1:15],
+                         men_Q25 = NA,
+                         men_Q75 = NA,
+                         women = transfused_eala[transfused_eala$sex_patient == "Nainen", ]$eala_sex_sum[1:15],
+                         women_p = transfused_eala[transfused_eala$sex_patient == "Nainen", ]$eala_sex_pct[1:15],
+                         women_Q25 = NA,
+                         women_Q75 = NA)
+
+table1 <- bind_rows(table1, eala_table)
+```
+
+## Number of transfusions by DRG
+
+```{r}
+transfused_DRG <- master %>%
+    group_by(code_drg) %>%
+    mutate(drg_sum = n()) %>%
+    group_by(drg, sex_patient) %>%
+    mutate(drg_sex_sum = n()) %>%
+    group_by(sex_patient) %>%
+    mutate(sex_n = n()) %>%
+    select(code_drg, drg_sum, sex_patient, drg_sex_sum, sex_n) %>%
+    distinct() %>%
+    filter(!is.na(code_drg)) %>%
+    ungroup() %>%
+    mutate(pct = drg_sum / nrow(master),
+           pct_sex = drg_sex_sum / sex_n) %>%
+    arrange(desc(drg_sum))
+
+# 13.6.2024
+# this below is broken, read results from transfused_DRG instead
+drg_table <- data.frame(descriptive = rep("DRGs", 15),
+                        subgroup = unique(transfused_DRG$code_drg)[1:15],
+                        overall = unique(transfused_DRG$drg_sum)[1:15],
+                        overall_p = unique(transfused_DRG$pct)[1:15],
+                        o_Q25 = NA,
+                        o_Q75 = NA,
+                        men = transfused_DRG[transfused_DRG$sex_patient == "Mies", ]$drg_sex_sum[1:15],
+                        men_p = transfused_DRG[transfused_DRG$sex_patient == "Mies", ]$pct_sex[1:15],
+                        men_Q25 = NA,
+                        men_Q75 = NA,
+                        women = transfused_DRG[transfused_DRG$sex_patient == "Nainen", ]$drg_sex_sum[1:15],
+                        women_p = transfused_DRG[transfused_DRG$sex_patient == "Nainen", ]$pct_sex[1:15],
+                        women_Q25 = NA,
+                        women_Q75 = NA)
+
+# dirty fix: remove count from men in drg category 372 (Vaginal delivery)
+# (the count comes from one row below due to the way we gather the drg_table)
+drg_table[drg_table$subgroup == "372", c("men", "men_p")] <- 0
+
+table1 <- bind_rows(table1, drg_table)
+saveRDS(table1, "./results/blood_use_Table_1.rds")
+```
+
+# Multicomponent transfusions
+
+```{r}
+multis <- master %>%
+    filter(sex_patient %in% c("Mies", "Nainen")) %>%
+    mutate(sex = ifelse(sex_patient == "Mies", "Male", "Female")) %>%
+    group_by(id_transfep) %>%
+    mutate(epis_n = n()) %>% # needed only for coverage calculation later
+    mutate(
+        num_RBC = sum(type_product == "RBC", na.rm = T),
+        num_Plasma = sum(type_product == "Plasma", na.rm = T),
+        num_Platelets = sum(type_product == "Platelets", na.rm = T),
+        num_NA_type_product = sum(is.na(type_product))
+    ) %>%
+    mutate(
+        episode_components = case_when(
+            num_RBC == 0 & num_Plasma == 0 & num_Platelets == 0 ~ NA,
+            num_RBC > 0 & num_Plasma == 0 & num_Platelets == 0 ~ "RBC",
+            num_RBC == 0 & num_Plasma > 0 & num_Platelets == 0 ~ "FFP",
+            num_RBC == 0 & num_Plasma == 0 & num_Platelets > 0 ~ "PLT",
+            num_RBC > 0 & num_Plasma > 0 & num_Platelets == 0 ~ "RBC + FFP",
+            num_RBC > 0 & num_Platelets > 0 & num_Plasma == 0 ~ "RBC + PLT",
+            num_Plasma > 0 & num_Platelets > 0 & num_RBC == 0 ~ "FFP + PLT",
+            num_Plasma > 0 & num_Platelets > 0 & num_RBC > 0 ~ "RBC + FFP + PLT",
+            num_NA_type_product > 0 & (num_RBC == 0 | num_Plasma == 0 | num_Platelets == 0) ~ NA
+        )
+    ) %>%
+    slice(1) %>%
+    select(sex, id_transfep, episode_components, epis_n) %>%
+    ungroup()
+
+plotmultis <- multis %>% # plot w/o NA
+    filter(!is.na(episode_components))
+
+multis_N <- 100 * sum(plotmultis$epis_n) / nrow(master)
+
+labelorder <- plotmultis %>%
+    group_by(episode_components) %>%
+    mutate(epis_comp_n = n()) %>%
+    ungroup() %>%
+    select(episode_components, epis_comp_n) %>%
+    distinct() %>%
+    arrange(desc(epis_comp_n))
+
+# Results computed over
+100 * sum(multis$epis_n) / nrow(master) #%
+# of units
+```
+
+## Figure 2 A
+
+Single vs. Multicomponent | yes or no %
+
+```{r}
+multis_yesno <- multis %>%
+    mutate(single_or_multi = ifelse(episode_components %in% c("RBC", "FFP", "PLT"), "Single component", "Multicomponent"))
+
+ggplot(
+    multis_yesno, 
+    aes(
+        x = factor(single_or_multi, levels = c("Single component", "Multicomponent")), 
+        fill = factor(sex, levels = c("Male", "Female")))
+    ) +
+    geom_bar(
+        aes(y = 100 * (..count..)/sum(..count..)),
+        position = "dodge"
+    ) +
+    scale_fill_manual(
+        values = gray(c(0.3, 0.7)),
+        name = "Sex"
+    ) +
+    labs(
+        x = "", 
+        y = "Percent of transfusion episodes"
+    ) +
+    theme_minimal() +
+    theme(
+        text = element_text(size = 13),
+        legend.position = "bottom"
+    )
+
+ggsave(
+    "./results/manuscript1_plots/Figure 2 A.png", 
+    width = 2700, 
+    height = 2100, 
+    units = "px", 
+    bg = "white"
+    )
+ggsave(
+    "./results/manuscript1_plots/svg/Figure 2 A.svg", 
+    width = 2700, 
+    height = 2100, 
+    units = "px", 
+    bg = "white"
+    )
+```
+
+## Figure 2 B
+
+Single component distirbution | RBC Platelet Plasma %
+
+```{r}
+singles <- multis %>%
+    filter(episode_components %in% c("RBC", "FFP", "PLT")) %>%
+    mutate(episode_components = case_when(
+                                    episode_components == "FFP" ~ "Plasma",
+                                    episode_components == "PLT" ~ "Platelets",
+                                    TRUE ~ "RBC"
+    ))
+
+ggplot(
+    singles, 
+    aes(
+        x = factor(episode_components, levels = c("RBC", "Platelets", "Plasma")), 
+        fill = factor(sex, levels = c("Male", "Female")))
+    ) +
+    geom_bar(
+        aes(y = 100 * (..count..)/sum(..count..)),
+        position = "dodge"
+    ) +
+    scale_fill_manual(
+        values = gray(c(0.3, 0.7)),
+        name = "Sex"
+    ) +
+    labs(
+        x = "", 
+        y = "Percent of single component transfusion episodes"
+    ) +
+    theme_minimal() +
+    theme(
+        text = element_text(size = 13),
+        legend.position = "bottom"
+    )
+
+ggsave(
+    "./results/manuscript1_plots/Figure 2 B.png", 
+    width = 2700, 
+    height = 2100, 
+    units = "px", 
+    bg = "white"
+    )
+ggsave(
+    "./results/manuscript1_plots/svg/Figure 2 B.svg", 
+    width = 2700, 
+    height = 2100, 
+    units = "px", 
+    bg = "white"
+    )
+```
+
+## Figure 2 C
+
+Multicomponent distirbution | %
+
+```{r}
+only_multis <- multis %>%
+    filter(!(episode_components %in% c("RBC", "FFP", "PLT")) & !is.na(episode_components)) %>%
+    mutate(episode_components = case_when(
+                                    episode_components == "RBC + FFP + PLT" ~ "RBC + Platelets + Plasma",
+                                    episode_components == "RBC + PLT" ~ "RBC + Platelets",
+                                    episode_components == "RBC + FFP" ~ "RBC + Plasma",
+                                    episode_components == "FFP + PLT" ~ "Platelets + Plasma"
+    ))
+
+ggplot(
+    only_multis, 
+    aes(
+        x = factor(episode_components, levels = c("RBC + Platelets", "RBC + Plasma", "RBC + Platelets + Plasma", "Platelets + Plasma")), 
+        fill = factor(sex, levels = c("Male", "Female")))
+    ) +
+    geom_bar(
+        aes(y = 100 * (..count..)/sum(..count..)),
+        position = "dodge"
+    ) +
+    scale_fill_manual(
+        values = gray(c(0.3, 0.7)),
+        name = "Sex"
+    ) +
+    labs(
+        x = "", 
+        y = "Percent of multicomponent transfusion episodes"
+    ) +
+    theme_minimal() +
+    theme(
+        text = element_text(size = 13),
+        legend.position = "bottom"
+    )
+
+ggsave(
+    "./results/manuscript1_plots/Figure 2 C.png", 
+    width = 2700, 
+    height = 2100, 
+    units = "px", 
+    bg = "white"
+    )
+ggsave(
+    "./results/manuscript1_plots/svg/Figure 2 C.svg", 
+    width = 2700, 
+    height = 2100, 
+    units = "px", 
+    bg = "white"
+    )
+```
+
+# Transfusions by ICD-10 Category
+
+## Figure 4
+
+```{r}
+pdf_icd2 <- master %>%
+    filter(!is.na(plot_label_icd_level_2_label) & !is.na(type_product) & sex_patient != "Ei tiedossa/Määriteltävissä") %>%
+    group_by(plot_label_icd_level_2_label, sex_patient, type_product) %>%
+    summarise(icd_count = n()) %>%
+    group_by(plot_label_icd_level_2_label) %>%
+    mutate(sum = sum(icd_count)) %>%
+    ungroup() %>%
+    arrange(desc(sum)) %>%
+    mutate(sex_patient = ifelse(sex_patient == "Mies", "Male", "Female"))
+
+icd_N <- master %>%
+    filter(!is.na(plot_label_icd_level_2_label) & !is.na(type_product) & sex_patient != "Ei tiedossa/Määriteltävissä") %>%
+    nrow() * 100 / nrow(master)
+
+icd2_order <- pdf_icd2 %>%
+    distinct(plot_label_icd_level_2_label)
+
+pdf_icd2_topn <- pdf_icd2 %>%
+    filter(plot_label_icd_level_2_label %in% icd2_order$plot_label_icd_level_2_label[1:15])
+
+discrete_y <- c(rev(icd2_order$plot_label_icd_level_2_label[1:15]))
+# Break long labels
+discrete_y_split <- splitAtCentralWhitespace(discrete_y, 33)
+
+pdf_icd2_topn_py <- pdf_icd2_topn %>%
+  mutate(x_transformed = ifelse(sex_patient == "Female", 100 * icd_count / nrow(master) * -1, 100 * icd_count / nrow(master)))
+
+# Create a dummy dataframe for the geom_blank
+# We need the geom_blank to force free_x scale to be equal
+# for both faceted panels
+dummy_df <- data.frame(
+  plot_label_icd_level_2_label = unique(pdf_icd2_topn$plot_label_icd_level_2_label),
+  x_transformed = -7.4,
+  type_product = NA,
+  sex_patient = "Female"
+)
+
+ggplot(pdf_icd2_topn_py,
+    aes(
+        y = factor(plot_label_icd_level_2_label, levels = rev(icd2_order$plot_label_icd_level_2_label)), 
+        x = x_transformed, 
+        fill = type_product
+    )
+    ) +
+    geom_bar(stat = "identity") +
+    geom_blank(data = dummy_df, aes(x = x_transformed)) +
+    # figure out an annotation for faceted plots
+    scale_y_discrete(labels = discrete_y_split) +
+    scale_fill_manual(values = gray(c(0.3, 0.5, 0.7)), breaks = c("RBC", "Platelets", "Plasma")) +
+    facet_wrap(vars(sex_patient), scales = "free_x") +
+    theme_minimal() +
+    labs(x = "Percent of all transfused units", y = "ICD-10 Category", fill = "Product type") +
+    theme(legend.position = "bottom", text = element_text(size = 13), panel.spacing = unit(0, "lines")) +
+    scale_x_continuous(labels = abs)
+
+
+ggsave("./results/manuscript1_plots/Figure 4.png", width = 3000, height = 3000, units = "px", bg = "white")
+ggsave("./results/manuscript1_plots/svg/Figure 4.svg", width = 3000, height = 3000, units = "px", bg = "white")
+
+# Share of neoplasms, anemias and cardiovascular diseases
+pdf_icd2_topn_py %>%
+    filter(plot_label_icd_level_2_label %in% c(
+        "C00-97 | Malignant neoplasms",
+        "D60-64 | Aplastic and other anaemias",
+        "I70-79 | Diseases of arteries, arterioles and capillaries",
+        "D37-48 | Neoplasms of uncertain or unknown behaviour",
+        "I30-52 | Other forms of heart disease",
+        "I20-25 | Ischaemic heart diseases",
+        "D50-53 | Nutritional anaemias"
+    )) %>%
+    distinct(plot_label_icd_level_2_label, sum) %>%
+    summarise(pct_tot = sum(sum) / nrow(master))
+
+# Results computed over
+100 * sum(pdf_icd2$icd_count) / nrow(master) #%
+# of units
+
+# Figure represents
+sum(abs(pdf_icd2_topn_py$x_transformed))
+```
+
+# Transfusion relation to operation
+
+## Figure 5
+
+```{r}
+pdf_liittyy <- master %>%
+    mutate(liittyy_extra = if_else(associated_w_or_event != "No", associated_w_or_event, conservative_operative)) %>%
+    filter(!is.na(liittyy_extra) & !is.na(type_product)) %>%
+    group_by(liittyy_extra, type_product) %>%
+    summarise(amount = n()) %>%
+    mutate(liittyy_binary = if_else(liittyy_extra %in% c("Conservative", "Operative"), "No", "Yes")) %>%
+    ungroup() %>%
+    mutate(pct = 100 * amount / nrow(master))
+
+# Summaries in text
+# Not-operation-related:
+pdf_liittyy %>%
+    filter(liittyy_extra %in% c("Conservative", "Operative")) %>%
+    summarise(non_pct = sum(pct)) # 52.0%
+# Conservative
+pdf_liittyy %>%
+    filter(liittyy_extra == "Conservative") %>%
+    summarise(cons_pct = sum(pct)) # 43.3%
+# Conservative out of non-surgical
+pdf_liittyy %>%
+    filter(liittyy_binary == "No") %>%
+    mutate(total = sum(amount)) %>%
+    group_by(liittyy_extra) %>%
+    summarise(rate = sum(amount) / total) %>%
+    distinct()
+# Non-surgical operative out of all operative
+# assuming all surgical are operative
+pdf_liittyy %>%
+    filter(liittyy_extra != "Conservative") %>%
+    mutate(total = sum(amount)) %>%
+    group_by(liittyy_binary) %>%
+    summarise(rate = sum(amount) / total)
+
+# When related to operation, preop
+pdf_liittyy %>%
+    filter(liittyy_extra %in% c("Preop", "Intraop", "Postop")) %>%
+    mutate(liittyy_sum = sum(amount)) %>%
+    group_by(liittyy_extra) %>%
+    mutate(liittyy_pct = 100 * amount / liittyy_sum) %>%
+    mutate(liittyy_pct_prodsum = sum(liittyy_pct)) %>%
+    select(liittyy_extra, liittyy_pct, liittyy_pct_prodsum)
+# 5.0% pre
+# 21.4% intra
+# 73.6% post
+
+ggplot(pdf_liittyy, aes(x = factor(liittyy_extra, levels = c("Conservative", "Operative", 
+                                                             "Preop", "Intraop", "Postop")), 
+                        y = pct, 
+                        fill = type_product, 
+                        pattern = liittyy_binary)) +
+    geom_bar_pattern(stat="identity", 
+                     pattern_fill = "white",
+                     pattern_color = "white",
+                     pattern_spacing = 0.03,
+                     pattern_frequency = 3, 
+                     pattern_angle = 45) +
+    scale_pattern_manual(values=c('stripe', 'none')) +
+    scale_fill_manual(values = gray(c(0.3, 0.5, 0.7)), breaks = c("RBC", "Platelets", "Plasma")) +
+    scale_x_discrete(labels = c("Conservative\nspecialty", "Operative\nspecialty", "Preoperative", "Intraoperative", "Postoperative")) +
+    labs(x = "Relation to an operation",
+         y = "Percent of transfused units",
+         fill = "Product type") +
+    theme_minimal() +
+    guides(pattern = FALSE,
+          fill = guide_legend(override.aes = list(pattern = c("none", "none", "none")))) +
+    theme(legend.position = "bottom", text = element_text(size = 13))
+
+ggsave("./results/manuscript1_plots/Figure 5.png", width = 3000, height = 3000, units = "px", bg = "white")
+ggsave("./results/manuscript1_plots/svg/Figure 5.svg", width = 3000, height = 3000, units = "px", bg = "white")
+
+# Transfusions associated with a surgical procedure
+pdf_liittyy %>%
+ filter(liittyy_binary == "Yes") %>%
+ summarise(sum = sum(amount)) / sum(pdf_liittyy$amount)
+
+# Results computed over
+100 * sum(pdf_liittyy$amount) / nrow(master) #%
+# of units
+```
+
+# Transfusions by Procedure (Functional-Anatomical Region)
+
+## Figure 6
+
+```{r}
+pdf_toim2 <- master %>%
+    filter(!is.na(plot_proc_level_2_label) & !is.na(type_product) & sex_patient != "Ei tiedossa/Määriteltävissä" & !(plot_proc_level_2_label %in% grep(" \\| NA", plot_proc_level_2_label, value = T))) %>%
+    group_by(plot_proc_level_2_label, sex_patient, type_product) %>%
+    summarise(toim_count = n()) %>%
+    group_by(plot_proc_level_2_label) %>%
+    mutate(sum = sum(toim_count)) %>%
+    ungroup() %>%
+    arrange(desc(sum)) %>%
+    mutate(sex_patient = ifelse(sex_patient == "Mies", "Male", "Female"))
+
+toim2_order <- pdf_toim2 %>%
+    distinct(plot_proc_level_2_label)
+
+pdf_toim2_topn <- pdf_toim2 %>%
+    filter(plot_proc_level_2_label %in% toim2_order$plot_proc_level_2_label[1:15])
+
+discrete_y <- c(rev(toim2_order$plot_proc_level_2_label[1:15]))
+# Break long labels
+discrete_y_split <- splitAtCentralWhitespace(discrete_y, 33)
+
+pdf_toim2_topn_py <- pdf_toim2_topn %>%
+  mutate(x_transformed = ifelse(sex_patient == "Female", 100 * toim_count / nrow(master) * -1, 100 * toim_count / nrow(master)))
+
+# Create a dummy dataframe for the geom_blank
+# We need the geom_blank to force free_x scale to be equal
+# for both faceted panels
+dummy_df <- data.frame(
+  plot_proc_level_2_label = unique(pdf_toim2_topn$plot_proc_level_2_label),
+  x_transformed = 3.363,
+  type_product = NA,
+  sex_patient = "Male"
+)
+
+ggplot(pdf_toim2_topn_py, aes(y = factor(plot_proc_level_2_label, levels = rev(toim2_order$plot_proc_level_2_label)), x = x_transformed, fill = factor(type_product, levels = c("Plasma", "Platelets", "RBC")))) +
+    geom_bar(stat = "identity") +
+    geom_blank(data = dummy_df, aes(x = x_transformed)) +
+    # figure out an annotation for faceted plots
+    scale_y_discrete(labels = discrete_y_split) +
+    scale_fill_manual(values = gray(c(0.3, 0.5, 0.7)), breaks = c("RBC", "Platelets", "Plasma")) +
+    facet_wrap(vars(sex_patient), scales = "free_x") +
+    theme_minimal() +
+    labs(x = "Percent of transfused units", y = "Procedures by functional-anatomical region (NCSP)", fill = "Product type") +
+    theme(legend.position = "bottom", text = element_text(size = 13), panel.spacing = unit(0, "lines")) +
+    scale_x_continuous(labels = abs)
+
+ggsave("./results/manuscript1_plots/Figure 6.png", width = 3000, height = 3000, units = "px", bg = "white")
+ggsave("./results/manuscript1_plots/svg/Figure 6.svg", width = 3000, height = 3000, units = "px", bg = "white")
+
+# Share of NF
+master %>%
+    mutate(NF = plot_proc_level_2_label == "NF | Hip joint and thigh") %>%
+    group_by(sex_patient) %>%
+    summarise(NFsum = sum(NF, na.rm = T)) %>%
+    mutate(NFrate = NFsum / nrow(master))
+# Share of NF + MB + JJ
+master %>%
+    mutate(
+        NFMBJJ = plot_proc_level_2_label %in% c(
+            "NF | Hip joint and thigh",
+            "MB | Procedures after delivery or abortion",
+            "JJ | Liver"
+            )
+        ) %>%
+    group_by(sex_patient) %>%
+    summarise(NFMBJJsum = sum(NFMBJJ, na.rm = T)) %>%
+    mutate(NFMBJJrate = NFMBJJsum / nrow(master))
+
+# Urgent v. Elective NF
+master %>%
+    filter(plot_proc_level_2_label == "NF | Hip joint and thigh") %>%
+    mutate(urgNF = !(urg_op %in% c("LP I", "LP II", "LP III"))) %>%
+    summarise(urgNFsum = sum(urgNF, na.rm = T), urgNFrate = sum(urgNF, na.rm = T) / n())
+# Urgent v. Elective NF procedure entities
+master %>%
+    filter(plot_proc_level_2_label == "NF | Hip joint and thigh") %>%
+    group_by(id_proc_set_proctbl) %>% # id for "set of procedures"
+    slice(1) %>%
+    mutate(urgNF = !(urg_op %in% c("LP I", "LP II", "LP III"))) %>%
+    ungroup() %>%
+    summarise(urgNFsum = sum(urgNF, na.rm = T), urgNFrate = sum(urgNF, na.rm = T) / n())
+
+# Results computed over
+100 * sum(pdf_toim2$toim_count) / nrow(master) #%
+# of units
+
+# Figure represents
+sum(abs(pdf_toim2_topn_py$x_transformed))
+```
+
+# Heatmap of Presentation versus Location
+
+## Figure 3 | Part C
+
+```{r}
+presentations_new <- master %>%
+    mutate(plot_label_presentation = case_when(
+        primary_presentation_method %in% c("Erikoisalasiirto samassa sairaalassa", "Sairaalasiirto") ~ "Hospital or ward transfer",
+        primary_presentation_method == "Siirto ajanvarausklinikalta osastohoitoon" & label_where_from_trep == "Sairaala" & label_followup_trep == "Sairaala" ~ "Hospital or ward transfer",
+        primary_presentation_method == "Siirto ajanvarausklinikalta osastohoitoon" & !(label_where_from_trep %in% c("Sairaala", "Terveyskeskus", grep("laitos", unique(master$label_where_from_trep), value = T))) & !(label_followup_trep %in% c("Sairaala", "Terveyskeskus", grep("laitos", unique(master$label_followup_trep), value = T))) ~ "Scheduled treatment",
+        primary_presentation_method == "Hoidonvaraus" ~ "Scheduled treatment",
+        primary_presentation_method == "Päivystys" ~ "Emergency or urgent admission",
+        TRUE ~ "Other"
+    )) %>%
+    mutate(plot_label_place = if_else(primary_location_category %in% c("Other", "Radiology unit", "Home care unit", "Cardiac care unit"), "Other", primary_location_category))
+
+pres_levels <- rev(c("Emergency or urgent admission", "Scheduled treatment", "Hospital or ward transfer", "Other"))
+place_levels <- rev(c("Hospital ward", "Operating rooms", "Emergency department", "Intensive care unit", "Outpatient unit",
+                      "Dialysis unit", "Endoscopy unit", "Obstetric unit", "Other"))
+
+
+longtable <- as.data.frame(table(presentations_new$plot_label_place, presentations_new$plot_label_presentation)) # long form table
+longtable$Var2 <- factor(longtable$Var2, levels = pres_levels)
+longtable$Var1 <- factor(longtable$Var1, levels = place_levels)
+
+# Sum by Var1
+sums_var1 <- longtable %>%
+  group_by(Var1) %>%
+  summarise(Sum = sum(Freq))
+
+# Sum by Var2
+sums_var2 <- longtable %>%
+  group_by(Var2) %>%
+  summarise(Sum = sum(Freq))
+
+# Emergency admission pct
+sums_var2[4, "Sum"] / nrow(master) # 61.2 %
+sums_var2[4, "Sum"] / sum(sums_var2$Sum) # 61.5 %
+
+# Heatmap coverage
+sum(longtable$Freq) / nrow(master)
+```
+
+```{r}
+# Heatmap plot with no legend or axis titles
+heatmap_plot <- ggplot(longtable, aes(x = Var1, y = Var2, fill = Freq)) +
+  geom_tile() +
+  theme_minimal() +
+  scale_fill_gradient(low = "#fdebf4", high = "#E7298A") +
+  theme(legend.position = "none", 
+        axis.title.x = element_blank(), 
+        axis.text.x = element_text(angle = 90),
+        axis.title.y = element_blank()) +
+  geom_text(aes(label = Freq))
+
+# Bar plot for Var1 with no y-axis elements and flipped coordinates
+bar_plot_var1 <- ggplot(sums_var1, aes(x = Var1, y = Sum, fill = Sum)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  scale_fill_gradient(low = "#fdebf4", high = "#E7298A") +
+  theme(axis.title.x = element_blank(), 
+        axis.text.x = element_blank(), 
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.position = "none")
+
+# Bar plot for Var2 with no x-axis elements
+bar_plot_var2 <- ggplot(sums_var2, aes(x = Var2, y = Sum, fill = Sum)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  coord_flip() +
+  scale_fill_gradient(low = "#fdebf4", high = "#E7298A") +
+  theme(axis.title.y = element_blank(), 
+        axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = "none")
+
+# design
+design = '
+###
+A##
+BC#
+'
+
+combinationplot <- wrap_plots(A = bar_plot_var1, B = heatmap_plot, C = bar_plot_var2, design = design, widths = c(4, 1, 0.1), heights = c(0.1, 1, 2))
+
+combinationplot
+  
+ggsave("./results/manuscript1_plots/Figure 3 C.png", bg = "white", width = 3000, height = 2200, units = "px")
+ggsave("./results/manuscript1_plots/svg/Figure 3 C.svg", width = 3000, height = 1500, units = "px", bg = "white")
+```
+
+# Pre and post transfusion Hb 
+
+## Figure 7
+
+```{r}
+hbs <- master %>%
+    filter(type_product == "RBC") %>%
+    group_by(id_transfep) %>%
+    arrange(time_hb_pre) %>%
+    mutate(hb_tdiff = difftime(time_hb_post_transfep, first(time_hb_pre), units = "hours")) %>%
+    mutate(epis_n = n()) %>%
+    slice(1) %>%
+    ungroup() %>%
+    filter(hb_tdiff <= 24) %>%
+    select(sex_group_patient, hb_pre, hb_post_transfep, epis_n) %>%
+    filter(!is.na(sex_group_patient)) %>%
+    filter(!is.na(hb_pre) & !is.na(hb_post_transfep)) %>%
+    mutate(sex_group_patient = case_when(sex_group_patient == "mies" ~ "Male",
+                                  sex_group_patient == "nainen_postmeno" ~ "Female | Postmenopausal",
+                                  sex_group_patient == "nainen_premeno" ~ "Female | Premenopausal")) %>%
+    mutate(sex_group_patient = factor(sex_group_patient, levels = c("Female | Premenopausal", "Female | Postmenopausal", "Male"))) %>%
+    mutate(hb_delta = (hb_post_transfep - hb_pre) / epis_n) %>%
+    group_by(sex_group_patient) %>%
+    pivot_longer(
+        cols = c(hb_pre, hb_post_transfep), 
+        names_to = "variable", 
+        values_to = "Hb"
+    ) %>%
+    mutate(variable = ifelse(variable == "hb_pre", "pre", "post")) %>%
+    ungroup()
+
+deltas <- hbs %>%
+    select(hb_delta, sex_group_patient) %>%
+    filter(row_number() %% 2 == 1)
+
+# Produce boot objects for pre-post-delta by sex_group
+## Male
+pre_male_bobj <- boot(
+    data = hbs[hbs$variable == "pre" & hbs$sex_group_patient == "Male", ]$Hb,
+    statistic = md_f,
+    R = 10000
+)
+post_male_bobj <- boot(
+    data = hbs[hbs$variable == "post" & hbs$sex_group_patient == "Male", ]$Hb,
+    statistic = md_f,
+    R = 10000
+)
+delta_male_bobj <- boot(
+    data = deltas[deltas$sex_group_patient == "Male", ]$hb_delta,
+    statistic = md_f,
+    R = 10000
+)
+## Female | Pre
+pre_fempre_bobj <- boot(
+    data = hbs[hbs$variable == "pre" & hbs$sex_group_patient == "Female | Premenopausal", ]$Hb,
+    statistic = md_f,
+    R = 10000
+)
+post_fempre_bobj <- boot(
+    data = hbs[hbs$variable == "post" & hbs$sex_group_patient == "Female | Premenopausal", ]$Hb,
+    statistic = md_f,
+    R = 10000
+)
+delta_fempre_bobj <- boot(
+    data = deltas[deltas$sex_group_patient == "Female | Premenopausal", ]$hb_delta,
+    statistic = md_f,
+    R = 10000
+)
+## Female | Post
+pre_fempost_bobj <- boot(
+    data = hbs[hbs$variable == "pre" & hbs$sex_group_patient == "Female | Postmenopausal", ]$Hb,
+    statistic = md_f,
+    R = 10000
+)
+post_fempost_bobj <- boot(
+    data = hbs[hbs$variable == "post" & hbs$sex_group_patient == "Female | Postmenopausal", ]$Hb,
+    statistic = md_f,
+    R = 10000
+)
+delta_fempost_bobj <- boot(
+    data = deltas[deltas$sex_group_patient == "Female | Postmenopausal", ]$hb_delta,
+    statistic = md_f,
+    R = 10000
+)
+
+# Produce CIs for bootobjs
+## Male
+pre_ci_male <- boot.ci(pre_male_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+post_ci_male <- boot.ci(post_male_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+delta_ci_male <- boot.ci(delta_male_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+## Female | Pre
+pre_ci_fempre <- boot.ci(pre_fempre_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+post_ci_fempre <- boot.ci(post_fempre_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+delta_ci_fempre <- boot.ci(delta_fempre_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+## Female | Post
+pre_ci_fempost <- boot.ci(pre_fempost_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+post_ci_fempost <- boot.ci(post_fempost_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+delta_ci_fempost <- boot.ci(delta_fempost_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+
+hbmedians <- data.frame(
+    md = c(
+        pre_fempre_bobj$t0, 
+        post_fempre_bobj$t0,
+        delta_fempre_bobj$t0,
+        pre_fempost_bobj$t0, 
+        post_fempost_bobj$t0,
+        delta_fempost_bobj$t0,
+        pre_male_bobj$t0, 
+        post_male_bobj$t0,
+        delta_male_bobj$t0
+        ),
+    variable = c(rep(c("pre", "post", "pre"), 3)),
+    sex_group_patient = factor(c(
+        "Female | Premenopausal", "Female | Premenopausal", "Female | Premenopausal",
+        "Female | Postmenopausal", "Female | Postmenopausal", "Female | Postmenopausal",
+        "Male", "Male", "Male"
+        ), levels = c("Female | Premenopausal", "Female | Postmenopausal", "Male")),
+    lo = c(
+        pre_ci_fempre$percent[4],
+        post_ci_fempre$percent[4],        
+        delta_ci_fempre$percent[4],
+        pre_ci_fempost$percent[4],
+        post_ci_fempost$percent[4],        
+        delta_ci_fempost$percent[4],
+        pre_ci_male$percent[4],
+        post_ci_male$percent[4],        
+        delta_ci_male$percent[4]
+        ),
+    hi = c(
+        pre_ci_fempre$percent[5],
+        post_ci_fempre$percent[5],        
+        delta_ci_fempre$percent[5],
+        pre_ci_fempost$percent[5],
+        post_ci_fempost$percent[5],        
+        delta_ci_fempost$percent[5],
+        pre_ci_male$percent[5],
+        post_ci_male$percent[5],        
+        delta_ci_male$percent[5]
+        )
+)
+
+hbmedians$lo <- round(hbmedians$lo, 1)
+hbmedians$hi <- round(hbmedians$hi, 1)
+
+premd <- hbmedians[c(1, 4, 7), ]
+postmd <- hbmedians[c(2, 5, 8), ]
+deltamd <- hbmedians[c(3, 6, 9), ]
+
+# Ns for plot
+hbs_N <- hbs %>%
+    group_by(sex_group_patient) %>%
+    mutate(N = n() / 2) %>%
+    filter(variable == "pre") %>%
+    select(sex_group_patient, variable, N) %>%
+    distinct()
+
+# df for "Medians [99% CI]" title lol
+titles <- data.frame(
+    lab = rep("Medians [99% CI]", 3),
+    sex_group_patient = factor(c("Female | Premenopausal", "Female | Postmenopausal", "Male"), levels = c("Female | Premenopausal", "Female | Postmenopausal", "Male")),
+    variable = rep("pre", 3)
+    )
+
+ggplot(hbs, aes(x = Hb, fill = factor(variable, levels = c("pre", "post")))) +
+    geom_density() +
+    scale_fill_manual(values = gray(c(0.7, 0.3), 0.5), name = "", labels = c("Before transfusion", "After transfusion")) +
+    geom_text(data = titles, aes(label = lab, x = 113, y = 0.03), fontface = "bold", size = 3, hjust = 0) +
+    geom_text(data = hbs_N, aes(label = paste0("N: ", format(N, big.mark = ",")), x = 30, y = 0.025), fontface = "bold", size = 4, hjust = 0) +
+    geom_text(data = premd, 
+              aes(label = paste0(
+                    "Before transfusion(s): ", md, " [", lo,", ", hi, "]", " g/L"
+                    ), 
+                  x = 113, 
+                  y = 0.025
+                 ), 
+              size = 3, 
+              hjust = 0
+             ) +
+    geom_text(data = postmd, 
+            aes(label = paste0(
+                "After transfusion(s): ", md, " [", lo,", ", hi, "]", " g/L"
+                ), 
+                x = 113, 
+                y = 0.020
+                ), 
+            size = 3, 
+            hjust = 0
+            ) +
+    geom_text(data = deltamd, 
+            aes(label = paste0(
+                "Δ per transfused unit: +", md, " [", lo,", ", hi, "]", " g/L"
+                ), 
+                x = 113, 
+                y = 0.015
+                ), 
+            size = 3, 
+            hjust = 0
+            ) +
+    geom_vline(data = premd, aes(xintercept = md), linetype = "dotdash") +
+    geom_vline(data = postmd, aes(xintercept = md), linetype = "dashed") +
+    facet_wrap(vars(sex_group_patient), ncol = 1) +
+    theme_minimal() +
+    labs(y = "Density") +
+    scale_x_continuous(breaks = c(20, 40, 60, 80, 100, 120, 140, 160)) +
+    theme(legend.position = "bottom", strip.text = element_text(size = 13), axis.text = element_text(size = 13), axis.title = element_text(size = 13), legend.text = element_text(size = 13))
+
+ggsave("./results/manuscript1_plots/Figure 7 Col1.png", width = 2000, height = 2000, units = "px", bg = "white")
+ggsave("./results/manuscript1_plots/svg/Figure 7 Col1.svg", width = 2000, height = 2000, units = "px", bg = "white")
+
+# Pretransf hb
+master %>%
+    summarise(md_prehb = median(hb_pre, na.rm = T))
+
+# Results computed over
+100 * sum(hbs$epis_n) / 2 / nrow(master) #%
+# of units
+```
+
+
+# Bleeding
+
+## Figure 7 (2nd column)
+
+```{r}
+bleeds <- master %>%
+    filter(!is.na(sex_group_patient) & !is.na(weight_patient) & !is.na(height_patient)) %>%
+    filter(bloodloss_pre != 0 | bloodloss_intra != 0) %>%
+    mutate(blood_volume = case_when( # Nadler's equation
+        sex_patient == "Mies" ~ 1000 * (0.3669 * (height_patient/100)^3 + 0.03219 * weight_patient + 0.6041),
+        sex_patient == "Nainen" ~ 1000 * (0.34561 * (height_patient/100)^3 + 0.03308 * weight_patient + 0.1833)
+        )
+    ) %>%
+    mutate(sex_group_patient = case_when(sex_group_patient == "mies" ~ "Male",
+                                  sex_group_patient == "nainen_postmeno" ~ "Female | Postmenopausal",
+                                  sex_group_patient == "nainen_premeno" ~ "Female | Premenopausal")) %>%
+    group_by(id_transfep) %>%
+    mutate(units_per_episode = n()) %>%
+    slice(1) %>%
+    ungroup() %>%
+    mutate(bloodloss_pct = 100 * (bloodloss_pre + bloodloss_intra) / blood_volume) %>%
+    mutate(bloodloss_pct_per_unit = bloodloss_pct / units_per_episode) %>%
+    mutate(sex_group_patient = factor(sex_group_patient, levels = c("Female | Premenopausal", "Female | Postmenopausal", "Male"))) %>%
+    select(sex_group_patient, units_per_episode, bloodloss_pct, bloodloss_pct_per_unit)
+
+#######################
+# This part for Table 1
+bleedstable <- master %>%
+    filter(!is.na(sex_group_patient)) %>%
+    filter(bloodloss_pre != 0 | bloodloss_intra != 0) %>%
+    group_by(id_transfep) %>%
+    mutate(units_per_episode = n()) %>%
+    slice(1) %>%
+    ungroup() %>%
+    mutate(bloodloss_per_unit = (bloodloss_pre + bloodloss_intra) / units_per_episode) %>%
+    select(sex_patient, bloodloss_per_unit) %>%
+    group_by(sex_patient) %>%
+    mutate(
+        md_bl_unit = median(bloodloss_per_unit),
+        range25_bl_unit = quantile(bloodloss_per_unit, probs = c(0.25)),
+        range75_bl_unit = quantile(bloodloss_per_unit, probs = c(0.75))
+    ) %>%
+    ungroup() %>%
+    mutate(
+        overall_median = median(bloodloss_per_unit),
+        overall_range25 = quantile(bloodloss_per_unit, probs = c(0.25)),
+        overall_range75 = quantile(bloodloss_per_unit, probs = c(0.75))
+    ) %>%
+    select(-bloodloss_per_unit) %>%
+    distinct()
+#######################
+
+bl_male <- bleeds %>%
+    filter(sex_group_patient == "Male")
+bl_prefem <- bleeds %>%
+    filter(sex_group_patient == "Female | Premenopausal")
+bl_postfem <- bleeds %>%
+    filter(sex_group_patient == "Female | Postmenopausal")
+
+# Extra for text:
+bl_fem <- rbind(bl_prefem, bl_postfem)
+md_bl_fem <- median(bl_fem$bloodloss_pct)
+
+## Bootstrap pct_per_unit medians
+bobj_male <- boot(data = bl_male$bloodloss_pct_per_unit, statistic = md_f, R = 10000) # bump to 10k for final results
+bci_male <- boot.ci(bobj_male, type = "bca", conf = 0.99)
+lo_male <- bci_male$bca[4]
+hi_male <- bci_male$bca[5]
+
+bobj_prefem <- boot(data = bl_prefem$bloodloss_pct_per_unit, statistic = md_f, R = 10000)
+bci_prefem <- boot.ci(bobj_prefem, type = "bca", conf = 0.99)
+lo_prefem <- bci_prefem$bca[4] 
+hi_prefem <- bci_prefem$bca[5]
+
+bobj_postfem <- boot(data = bl_postfem$bloodloss_pct_per_unit, statistic = md_f, R = 10000)
+bci_postfem <- boot.ci(bobj_postfem, type = "bca", conf = 0.99)
+lo_postfem <- bci_postfem$bca[4] 
+hi_postfem <- bci_postfem$bca[5]
+
+## Bootstrap pct medians
+bobj_male_pct <- boot(data = bl_male$bloodloss_pct, statistic = md_f, R = 10000) # bump to 10k for final results
+bci_male_pct <- boot.ci(bobj_male_pct, type = "bca", conf = 0.99) 
+lo_male_pct <- bci_male_pct$bca[4] 
+hi_male_pct <- bci_male_pct$bca[5]
+
+bobj_prefem_pct <- boot(data = bl_prefem$bloodloss_pct, statistic = md_f, R = 10000)
+bci_prefem_pct <- boot.ci(bobj_prefem_pct, type = "bca", conf = 0.99)
+lo_prefem_pct <- bci_prefem_pct$bca[4] 
+hi_prefem_pct <- bci_prefem_pct$bca[5]
+
+bobj_postfem_pct <- boot(data = bl_postfem$bloodloss_pct, statistic = md_f, R = 10000)
+bci_postfem_pct <- boot.ci(bobj_postfem_pct, type = "bca", conf = 0.99)
+lo_postfem_pct <- bci_postfem_pct$bca[4] 
+hi_postfem_pct <- bci_postfem_pct$bca[5]
+
+bootmedians <- data.frame(
+    md_pct_unit = c(
+        bobj_prefem$t0, 
+        bobj_postfem$t0,
+        bobj_male$t0
+        ),
+    md_pct = c(
+        bobj_prefem_pct$t0, 
+        bobj_postfem_pct$t0,
+        bobj_male_pct$t0
+    ),
+    sex_group_patient = factor(c(
+        "Female | Premenopausal",
+        "Female | Postmenopausal",
+        "Male"
+        )),
+    lo_unit = c(
+        lo_prefem,
+        lo_postfem,        
+        lo_male
+        ),
+    hi_unit = c(
+        hi_prefem,
+        hi_postfem,
+        hi_male
+        ),
+    lo_pct = c(
+        lo_prefem_pct,
+        lo_postfem_pct,        
+        lo_male_pct
+    ),
+    hi_pct = c(
+        hi_prefem_pct,
+        hi_postfem_pct,
+        hi_male_pct
+    )
+)
+
+bleeds_N <- bleeds %>%
+    group_by(sex_group_patient) %>%
+    summarise(N = n()) %>%
+    select(sex_group_patient, N) %>%
+    distinct()
+
+ggplot(bleeds, aes(x = bloodloss_pct_per_unit)) +
+    geom_density(fill = gray(0.7), alpha = 0.5) +
+    facet_wrap(vars(sex_group_patient), ncol = 1) +
+    xlim(c(0, 20)) +
+    geom_text(data = bootmedians[bootmedians$sex_group_patient != "Female | Premenopausal", ], aes(label = "Medians [99% CI]", fontface = "bold", x = 10, y = 0.10), size = 3, hjust = 0) +
+    geom_text(data = bootmedians[bootmedians$sex_group_patient == "Female | Premenopausal", ], aes(label = "Medians [99% CI]", fontface = "bold", x = 0, y = 0.105), size = 3, hjust = 0) +
+    geom_text(data = bleeds_N, aes(label = paste("N:", format(N, big.mark = ",", trim = T)), x = 15, y = 0.05), fontface = "bold", size = 4, hjust = 0) +
+    geom_text(data = bootmedians[bootmedians$sex_group_patient == "Female | Premenopausal", ], aes(label = paste0(
+                    "Loss per episode: ", round(md_pct, 2), " [", round(lo_pct, 2), ", ", round(hi_pct, 2), "]", " %\n", 
+                    "Loss per transfused unit: ", round(md_pct_unit, 2), " [", round(lo_unit, 2), ", ", round(hi_unit, 2), "]", " %"
+                    ), 
+                  x = 0, 
+                  y = 0.085
+                 ), 
+              size = 3, 
+              hjust = 0) +
+    geom_text(data = bootmedians[bootmedians$sex_group_patient != "Female | Premenopausal", ], 
+              aes(label = paste0(
+                    "Loss per episode: ", round(md_pct, 2), " [", round(lo_pct, 2), ", ", round(hi_pct, 2), "]", " %\n", 
+                    "Loss per transfused unit: ", round(md_pct_unit, 2), " [", round(lo_unit, 2), ", ", round(hi_unit, 2), "]", " %"
+                    ), 
+                  x = 10, 
+                  y = 0.08
+                 ), 
+              size = 3, 
+              hjust = 0
+             ) +
+    geom_vline(data = bootmedians, aes(xintercept = md_pct_unit), linetype = "dashed") +
+    theme_minimal() +
+    labs(x = "Loss of blood (% of volume) per transfused unit",
+         y = "Density") +
+    theme(strip.text = element_text(size = 13), axis.text = element_text(size = 13), axis.title = element_text(size = 13), legend.text = element_text(size = 13))
+
+ggsave("./results/manuscript1_plots/Figure 7 Col2.png", width = 2000, height = 2000, units = "px", bg = "white")
+ggsave("./results/manuscript1_plots/svg/Figure 7 Col2.svg", width = 2000, height = 2000, units = "px", bg = "white")
+
+# Results computed over
+100 * sum(bleeds$units_per_episode) / nrow(master) #%
+# of units
+```
+
+# Massive transfusion
+
+Currently only in text
+
+```{r}
+massives <- master %>%
+    group_by(id_transfep) %>%
+    mutate(episode_n = n()) %>%
+    ungroup() %>%
+    mutate(massive = ifelse(episode_n > 9, TRUE, FALSE)) %>%
+    filter(massive) %>%
+    group_by(sex_group_patient, type_product) %>%
+    mutate(distinct_episodes = n_distinct(id_transfep)) %>%
+    mutate(massive_n = n()) %>%
+    mutate(massive_per_epi = massive_n / distinct_episodes) %>%
+    select(sex_group_patient, distinct_episodes, massive_n, massive_per_epi) %>%
+    distinct() %>%
+    ungroup() %>%
+    mutate(
+        massive_pct = 100 * massive_n / sum(massive_n),
+        massive_pct_epis = 100 * massive_per_epi / sum(massive_per_epi)
+    ) %>%
+    arrange(desc(massive_n))
+```
+
+# Supplemental
+
+## From first diagnosis to transfusion
+
+```{r}
+diags <- readRDS("./results/data/apotti_diagnoosi.rds") %>%
+    filter(henkilotunnus %in% unique(master$id_patient)) %>%
+    filter(paadiagnoosi) %>%
+    rename("id_patient" = "henkilotunnus")
+```
+
+```{r}
+diags_sel <- diags %>%
+    select(id_patient, diagnoosi_koodi, ilmoitettu_alkuhetki) %>%
+    group_by(id_patient, diagnoosi_koodi) %>%
+    slice_min(order_by = ilmoitettu_alkuhetki)
+rm(diags)
+pat_ICD <- master %>%
+    select(id_patient, code_main_icd_contact, start_transf, label_icd_level_1, label_icd_level_2) %>%
+    group_by(id_patient, code_main_icd_contact) %>%
+    slice_min(order_by = start_transf)
+
+others <- c("Factors influencing health status and contact with health services",
+            "Mental and behavioural disorders",
+            "Codes for special purposes")
+
+pat_diags <- pat_ICD %>%
+    left_join(diags_sel, by = c("id_patient", "code_main_icd_contact" = "diagnoosi_koodi")) %>%
+    mutate(diag_to_transf_hours = as.numeric(difftime(start_transf, ilmoitettu_alkuhetki, units = "hours"))) %>%
+    mutate(diag_to_transf_days = diag_to_transf_hours / 24) %>%
+    filter(diag_to_transf_hours >= 0) %>%
+    group_by(label_icd_level_1) %>%
+    #group_by(label_icd_level_2) %>%
+    mutate(mean_tdiff_hours = mean(diag_to_transf_hours)) %>%
+    mutate(mean_tdiff_days = mean_tdiff_hours / 24) %>%
+    mutate(median_tdiff_hours = median(diag_to_transf_hours)) %>%
+    mutate(median_tdiff_days = median_tdiff_hours / 24) %>%
+    filter(!is.na(label_icd_level_1) & label_icd_level_1 != "Diseases of the ear and mastoid process" & label_icd_level_1 != "Diseases of the eye and adnexa") %>%
+    mutate(ICD_plotlabel = case_when(
+        label_icd_level_1 == "Diseases of the blood and blood-forming organs and certain disorders involving the immune mechanism" ~ "Diseases of blood & immune mechanism",
+        label_icd_level_1 %in% others ~ "Other",
+        TRUE ~ label_icd_level_1)
+        ) %>%
+    group_by(ICD_plotlabel) %>%
+    mutate(ICD1_num = n()) %>%
+    mutate(label_median_days = median(diag_to_transf_days)) %>%
+    mutate(ICD2_num = n()) %>%
+    mutate(median_days = median(diag_to_transf_days)) %>%
+    ungroup()
+rm(pat_ICD)
+labelorder <- pat_diags %>%
+    distinct(ICD_plotlabel, median_days) %>%
+    arrange(desc(median_days))
+
+discrete_y <- c(rev(labelorder$ICD_plotlabel[1:15]))
+# Break long labels
+discrete_y_split <- splitAtCentralWhitespace(discrete_y, 33)
+
+pat_diags$ICD_plotlabel <- factor(pat_diags$ICD_plotlabel, levels = labelorder$ICD_plotlabel)
+```
+
+```{r}
+diag_N = pat_diags %>%
+    select(ICD_plotlabel, ICD1_num) %>%
+    distinct()
+
+ggplot(
+    pat_diags %>% filter(diag_to_transf_days > 0), 
+    aes(
+        x = diag_to_transf_days, 
+        y = ICD_plotlabel, 
+        fill = log(..x..)
+        )
+    ) +
+    geom_density_ridges_gradient(
+        scale = 3, 
+        rel_min_height = 0.01, 
+        quantile_lines = T, 
+        quantiles = 2,
+        alpha = 0.4
+        ) +
+    geom_text(
+        data = diag_N, 
+        aes(
+            x = 4000, 
+            y = ICD_plotlabel, 
+            label = paste0("N = ", format(ICD1_num, big.mark = ","))), 
+            nudge_y = 0.5,
+            fontface = "bold"
+            ) +
+    scale_fill_gradient(low = "#fdebf4", high = "#E7298A") +
+    scale_y_discrete(labels = discrete_y_split) +
+    theme_minimal() +
+    theme(
+        legend.position = "none",
+        panel.spacing = unit(0.1, "lines"),
+        text = element_text(size = 13)
+        ) +
+    scale_x_continuous(
+        breaks = c(1, 7, 30, 365, 3650), 
+        limits = c(0.1, 20000), 
+        trans = "log"
+        ) +
+    labs(
+        x = "Days",
+        y = "ICD-10 Top Level Categories"
+        )
+
+ggsave("./results/manuscript1_plots/S3.png", bg = "white", width = 3000, height = 3000, units = "px")
+ggsave("./results/manuscript1_plots/svg/S3.svg", bg = "white", width = 3000, height = 3000, units = "px")
+```
+
+## Number of transfused units -distributions
+
+```{r}
+fill_colors <- c("#e7298a", "#00BFB2", "#4e4553")
+color_colors <- c("#c71670", "#008c82", "#342e37")
+
+master_filtered <- master %>% 
+    filter(!is.na(type_product))
+
+master_filtered$type_product <- factor(master_filtered$type_product, levels = c("RBC", "Platelets", "Plasma"))
+master$type_product <- factor(master$type_product, levels = c("RBC", "Platelets", "Plasma"))
+
+# Episode wise
+p_episode <- transfusionEventDistribution_Grouped(
+    master,
+    variable="id_transfep",
+    grouping_variable = "type_product",
+    color_var_name = "blood product",
+    color_var_name_x = "blood product",
+    y_var_name = "transfusion episodes",
+    fill_var_name = "transfusion\nepisodes",
+    grouping_var_name = "product type",
+    fill_colors = fill_colors,
+    color_colors = color_colors
+)
+
+p_episode <- p_episode + 
+    theme(legend.position = "bottom", legend.box="horizontal") +
+    guides(fill = guide_legend(nrow = 3, order = 1), color = guide_legend(nrow = 3, order = 2))
+
+p_episode
+
+ggsave("./results/manuscript1_plots/S4_A.png", width = 2300, height = 2500, units = "px", bg = "white")
+ggsave("./results/manuscript1_plots/svg/S4_A.svg", width = 2300, height = 2500, units = "px", bg = "white")
+
+# Shjakso wise
+p_shj <- transfusionEventDistribution_Grouped(
+    master_filtered,
+    variable="shjakso_numero",
+    grouping_variable = "type_product",
+    color_var_name = "blood product",
+    color_var_name_x = "blood product",
+    y_var_name = "treatment episodes",
+    fill_var_name = "treatment\nepisodes",
+    grouping_var_name = "product type",
+    fill_colors = fill_colors,
+    color_colors = color_colors
+)
+p_shj <- p_shj + 
+    theme(legend.position = "bottom", legend.box="horizontal") +
+    guides(fill = guide_legend(nrow = 3, order = 1), color = guide_legend(nrow = 3, order = 2))
+p_shj
+
+ggsave("./results/manuscript1_plots/S4_B.png", width = 2300, height = 2500, units = "px", bg = "white")
+ggsave("./results/manuscript1_plots/svg/S4_B.svg", width = 2300, height = 2500, units = "px", bg = "white")
+```
+
+## Trom labs
+
+Code adapted completely from analyses_included.qmd by Esa.
+
+```{r}
+Troms <- master %>%
+    filter(type_product == "Platelets") %>%
+    group_by(id_transfep) %>%
+    arrange(time_plt_pre) %>%
+    mutate(Trom_tdiff = difftime(time_plt_post_transfep, first(time_plt_pre), units = "hours")) %>%
+    mutate(epis_n = n()) %>%
+    slice(1) %>%
+    ungroup() %>%
+    filter(Trom_tdiff <= 24) %>%
+    select(sex_group_patient, plt_pre, plt_post_transfep, epis_n) %>%
+    filter(!is.na(sex_group_patient)) %>%
+    filter(!is.na(plt_pre) & !is.na(plt_post_transfep)) %>%
+    mutate(sex_group_patient = case_when(sex_group_patient == "mies" ~ "Male",
+                                  sex_group_patient == "nainen_postmeno" ~ "Female | Postmenopausal",
+                                  sex_group_patient == "nainen_premeno" ~ "Female | Premenopausal")) %>%
+    mutate(sex_group_patient = factor(sex_group_patient, levels = c("Female | Premenopausal", "Female | Postmenopausal", "Male"))) %>%
+    mutate(Trom_delta = (plt_post_transfep - plt_pre) / epis_n) %>%
+    group_by(sex_group_patient) %>%
+    pivot_longer(
+        cols = c(plt_pre, plt_post_transfep), 
+        names_to = "variable", 
+        values_to = "Trom"
+    ) %>%
+    mutate(variable = ifelse(variable == "plt_pre", "pre", "post")) %>%
+    ungroup()
+
+deltas <- Troms %>%
+    select(Trom_delta, sex_group_patient) %>%
+    filter(row_number() %% 2 == 1)
+
+## This for text:
+Troms %>%
+    filter(sex_group_patient != "Male") %>%
+    filter(variable == "pre") %>%
+    summarise(
+        md = median(Trom),
+        Q25 = quantile(Trom, 0.25),
+        Q75 = quantile(Trom, 0.75))
+Troms %>%
+    filter(sex_group_patient == "Male") %>%
+    filter(variable == "pre") %>%
+    summarise(
+        md = median(Trom),
+        Q25 = quantile(Trom, 0.25),
+        Q75 = quantile(Trom, 0.75))
+
+# Produce boot objects for pre-post-delta by sex_group
+## Male
+pre_male_bobj <- boot(
+    data = Troms[Troms$variable == "pre" & Troms$sex_group_patient == "Male", ]$Trom,
+    statistic = md_f,
+    R = 10000
+)
+post_male_bobj <- boot(
+    data = Troms[Troms$variable == "post" & Troms$sex_group_patient == "Male", ]$Trom,
+    statistic = md_f,
+    R = 10000
+)
+delta_male_bobj <- boot(
+    data = deltas[deltas$sex_group_patient == "Male", ]$Trom_delta,
+    statistic = md_f,
+    R = 10000
+)
+## Female | Pre
+pre_fempre_bobj <- boot(
+    data = Troms[Troms$variable == "pre" & Troms$sex_group_patient == "Female | Premenopausal", ]$Trom,
+    statistic = md_f,
+    R = 10000
+)
+post_fempre_bobj <- boot(
+    data = Troms[Troms$variable == "post" & Troms$sex_group_patient == "Female | Premenopausal", ]$Trom,
+    statistic = md_f,
+    R = 10000
+)
+delta_fempre_bobj <- boot(
+    data = deltas[deltas$sex_group_patient == "Female | Premenopausal", ]$Trom_delta,
+    statistic = md_f,
+    R = 10000
+)
+## Female | Post
+pre_fempost_bobj <- boot(
+    data = Troms[Troms$variable == "pre" & Troms$sex_group_patient == "Female | Postmenopausal", ]$Trom,
+    statistic = md_f,
+    R = 10000
+)
+post_fempost_bobj <- boot(
+    data = Troms[Troms$variable == "post" & Troms$sex_group_patient == "Female | Postmenopausal", ]$Trom,
+    statistic = md_f,
+    R = 10000
+)
+delta_fempost_bobj <- boot(
+    data = deltas[deltas$sex_group_patient == "Female | Postmenopausal", ]$Trom_delta,
+    statistic = md_f,
+    R = 10000
+)
+
+# Produce CIs for bootobjs
+## Male
+pre_ci_male <- boot.ci(pre_male_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+post_ci_male <- boot.ci(post_male_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+delta_ci_male <- boot.ci(delta_male_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+## Female | Pre
+pre_ci_fempre <- boot.ci(pre_fempre_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+post_ci_fempre <- boot.ci(post_fempre_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+delta_ci_fempre <- boot.ci(delta_fempre_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+## Female | Post
+pre_ci_fempost <- boot.ci(pre_fempost_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+post_ci_fempost <- boot.ci(post_fempost_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+delta_ci_fempost <- boot.ci(delta_fempost_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+
+Trommedians <- data.frame(
+    md = c(
+        pre_fempre_bobj$t0, 
+        post_fempre_bobj$t0,
+        delta_fempre_bobj$t0,
+        pre_fempost_bobj$t0, 
+        post_fempost_bobj$t0,
+        delta_fempost_bobj$t0,
+        pre_male_bobj$t0, 
+        post_male_bobj$t0,
+        delta_male_bobj$t0
+        ),
+    variable = c(rep(c("pre", "post", "pre"), 3)),
+    sex_group_patient = factor(c(
+        "Female | Premenopausal", "Female | Premenopausal", "Female | Premenopausal",
+        "Female | Postmenopausal", "Female | Postmenopausal", "Female | Postmenopausal",
+        "Male", "Male", "Male"
+        ), levels = c("Female | Premenopausal", "Female | Postmenopausal", "Male")),
+    lo = c(
+        pre_ci_fempre$percent[4],
+        post_ci_fempre$percent[4],        
+        delta_ci_fempre$percent[4],
+        pre_ci_fempost$percent[4],
+        post_ci_fempost$percent[4],        
+        delta_ci_fempost$percent[4],
+        pre_ci_male$percent[4],
+        post_ci_male$percent[4],        
+        delta_ci_male$percent[4]
+        ),
+    hi = c(
+        pre_ci_fempre$percent[5],
+        post_ci_fempre$percent[5],        
+        delta_ci_fempre$percent[5],
+        pre_ci_fempost$percent[5],
+        post_ci_fempost$percent[5],        
+        delta_ci_fempost$percent[5],
+        pre_ci_male$percent[5],
+        post_ci_male$percent[5],        
+        delta_ci_male$percent[5]
+        )
+)
+
+Trommedians$lo <- round(Trommedians$lo, 1)
+Trommedians$hi <- round(Trommedians$hi, 1)
+
+premd <- Trommedians[c(1, 4, 7), ]
+postmd <- Trommedians[c(2, 5, 8), ]
+deltamd <- Trommedians[c(3, 6, 9), ]
+
+# 0.975 quantile for x-limits
+max_q975 <- Troms %>%
+    group_by(sex_group_patient, variable) %>%
+    summarise(q975 = quantile(Trom, p=0.975)) %>%
+    pull(q975) %>%
+    max()
+
+# Ns for plot
+Troms_N <- Troms %>%
+    filter(Trom <= max_q975) %>%
+    group_by(sex_group_patient) %>%
+    mutate(N = round(n() / 2)) %>%
+    select(sex_group_patient, variable, N) %>%
+    distinct()
+
+# df for "Medians [99% CI]" title lol
+titles <- data.frame(
+    lab = rep("Medians [99% CI]", 3),
+    sex_group_patient = factor(c("Female | Premenopausal", "Female | Postmenopausal", "Male"), levels = c("Female | Premenopausal", "Female | Postmenopausal", "Male")),
+    variable = rep("pre", 3)
+    )
+
+ggplot(Troms, aes(x = Trom, fill = factor(variable, levels = c("pre", "post")))) +
+    geom_density() +
+    scale_fill_manual(values = gray(c(0.7, 0.3), 0.5), name = "", labels = c("Before transfusion", "After transfusion")) +
+    geom_text(data = titles, aes(label = "Medians [99% CI]", fontface = "bold", x = 150, y = 0.015), size = 3, hjust = 0) +
+    geom_text(data = Troms_N, aes(label = paste("N:", format(N, big.mark = ",", trim = T)), x = 15, y = 0.012), fontface = "bold", size = 4, hjust = 0) +
+    geom_text(data = premd, 
+              aes(label = paste0(
+                    "Before transfusion(s): ", md, " [", lo,", ", hi, "]", " E9/L"
+                    ), 
+                  x = 150, 
+                  y = 0.012
+                 ), 
+              size = 3, 
+              hjust = 0
+             ) +
+    geom_text(data = postmd, 
+            aes(label = paste0(
+                "After transfusion(s): ", md, " [", lo,", ", hi, "]", " E9/L"
+                ), 
+                x = 150, 
+                y = 0.009
+                ), 
+            size = 3, 
+            hjust = 0
+            ) +
+    geom_text(data = deltamd, 
+            aes(label = paste0(
+                "Δ per transfused unit: +", md, " [", lo,", ", hi, "]", " E9/L"
+                ), 
+                x = 150, 
+                y = 0.006
+                ), 
+            size = 3, 
+            hjust = 0
+            ) +
+    geom_vline(data = premd, aes(xintercept = md), linetype = "dotdash") +
+    geom_vline(data = postmd, aes(xintercept = md), linetype = "dashed") +
+    facet_wrap(vars(sex_group_patient), ncol = 1) +
+    theme_minimal() +
+    labs(y = "Density", x="Platelet count") +
+    theme(legend.position = "bottom", strip.text = element_text(size = 13), axis.text = element_text(size = 13), axis.title = element_text(size = 13), legend.text = element_text(size = 13), axis.title.x = element_text(margin = margin(t = 14)),) +
+    scale_x_continuous(breaks = seq(0, max_q975, by=50), limits = c(0, max_q975))
+
+ggsave("./results/manuscript1_plots/S5_A.png", width = 2000, height = 2000, units = "px", bg = "white")
+ggsave("./results/manuscript1_plots/svg/S5_A.svg", width = 2000, height = 2000, units = "px", bg = "white")
+
+# Results computed over
+100 * sum(Troms$epis_n) / 2 / nrow(master) #%
+# of units
+```
+
+## INR labs
+
+```{r}
+INRs <- master %>%
+    filter(type_product == "Plasma") %>%
+    group_by(id_transfep) %>%
+    arrange(time_inr_pre) %>%
+    mutate(INR_tdiff = difftime(time_inr_post_transfep, first(time_inr_pre), units = "hours")) %>%
+    mutate(epis_n = n()) %>%
+    slice(1) %>%
+    ungroup() %>%
+    filter(INR_tdiff <= 24) %>%
+    select(sex_group_patient, inr_pre, inr_post_transfep, epis_n) %>%
+    filter(!is.na(sex_group_patient)) %>%
+    filter(!is.na(inr_pre) & !is.na(inr_post_transfep)) %>%
+    mutate(sex_group_patient = case_when(sex_group_patient == "mies" ~ "Male",
+                                  sex_group_patient == "nainen_postmeno" ~ "Female | Postmenopausal",
+                                  sex_group_patient == "nainen_premeno" ~ "Female | Premenopausal")) %>%
+    mutate(sex_group_patient = factor(sex_group_patient, levels = c("Female | Premenopausal", "Female | Postmenopausal", "Male"))) %>%
+    mutate(INR_delta = (inr_post_transfep - inr_pre) / epis_n) %>%
+    group_by(sex_group_patient) %>%
+    pivot_longer(
+        cols = c(inr_pre, inr_post_transfep), 
+        names_to = "variable", 
+        values_to = "INR"
+    ) %>%
+    mutate(variable = ifelse(variable == "inr_pre", "pre", "post")) %>%
+    ungroup()
+
+deltas <- INRs %>%
+    select(INR_delta, sex_group_patient) %>%
+    filter(row_number() %% 2 == 1)
+
+## For text:
+INRs %>%
+    filter(sex_group_patient != "Male") %>%
+    filter(variable == "pre") %>%
+    summarise(
+        md = median(INR),
+        Q25 = quantile(INR, 0.25),
+        Q75 = quantile(INR, 0.75)
+    )
+INRs %>%
+    filter(sex_group_patient == "Male") %>%
+    filter(variable == "pre") %>%
+    summarise(
+        md = median(INR),
+        Q25 = quantile(INR, 0.25),
+        Q75 = quantile(INR, 0.75)
+    )
+# Produce boot objects for pre-post-delta by sex_group
+## Male
+pre_male_bobj <- boot(
+    data = INRs[INRs$variable == "pre" & INRs$sex_group_patient == "Male", ]$INR,
+    statistic = md_f,
+    R = 10000
+)
+post_male_bobj <- boot(
+    data = INRs[INRs$variable == "post" & INRs$sex_group_patient == "Male", ]$INR,
+    statistic = md_f,
+    R = 10000
+)
+delta_male_bobj <- boot(
+    data = deltas[deltas$sex_group_patient == "Male", ]$INR_delta,
+    statistic = md_f,
+    R = 10000
+)
+## Female | Pre
+pre_fempre_bobj <- boot(
+    data = INRs[INRs$variable == "pre" & INRs$sex_group_patient == "Female | Premenopausal", ]$INR,
+    statistic = md_f,
+    R = 10000
+)
+post_fempre_bobj <- boot(
+    data = INRs[INRs$variable == "post" & INRs$sex_group_patient == "Female | Premenopausal", ]$INR,
+    statistic = md_f,
+    R = 10000
+)
+delta_fempre_bobj <- boot(
+    data = deltas[deltas$sex_group_patient == "Female | Premenopausal", ]$INR_delta,
+    statistic = md_f,
+    R = 10000
+)
+## Female | Post
+pre_fempost_bobj <- boot(
+    data = INRs[INRs$variable == "pre" & INRs$sex_group_patient == "Female | Postmenopausal", ]$INR,
+    statistic = md_f,
+    R = 10000
+)
+post_fempost_bobj <- boot(
+    data = INRs[INRs$variable == "post" & INRs$sex_group_patient == "Female | Postmenopausal", ]$INR,
+    statistic = md_f,
+    R = 10000
+)
+delta_fempost_bobj <- boot(
+    data = deltas[deltas$sex_group_patient == "Female | Postmenopausal", ]$INR_delta,
+    statistic = md_f,
+    R = 10000
+)
+
+# Produce CIs for bootobjs
+## Male
+pre_ci_male <- boot.ci(pre_male_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+post_ci_male <- boot.ci(post_male_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+delta_ci_male <- boot.ci(delta_male_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+## Female | Pre
+pre_ci_fempre <- boot.ci(pre_fempre_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+post_ci_fempre <- boot.ci(post_fempre_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+delta_ci_fempre <- boot.ci(delta_fempre_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+## Female | Post
+pre_ci_fempost <- boot.ci(pre_fempost_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+post_ci_fempost <- boot.ci(post_fempost_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+delta_ci_fempost <- boot.ci(delta_fempost_bobj, type = "perc", conf = 0.99) # estimates don't vary enough to use bca
+
+INRmedians <- data.frame(
+    md = c(
+        pre_fempre_bobj$t0, 
+        post_fempre_bobj$t0,
+        delta_fempre_bobj$t0,
+        pre_fempost_bobj$t0, 
+        post_fempost_bobj$t0,
+        delta_fempost_bobj$t0,
+        pre_male_bobj$t0, 
+        post_male_bobj$t0,
+        delta_male_bobj$t0
+        ),
+    variable = c(rep(c("pre", "post", "pre"), 3)),
+    sex_group_patient = factor(c(
+        "Female | Premenopausal", "Female | Premenopausal", "Female | Premenopausal",
+        "Female | Postmenopausal", "Female | Postmenopausal", "Female | Postmenopausal",
+        "Male", "Male", "Male"
+        ), levels = c("Female | Premenopausal", "Female | Postmenopausal", "Male")),
+    lo = c(
+        pre_ci_fempre$percent[4],
+        post_ci_fempre$percent[4],        
+        delta_ci_fempre$percent[4],
+        pre_ci_fempost$percent[4],
+        post_ci_fempost$percent[4],        
+        delta_ci_fempost$percent[4],
+        pre_ci_male$percent[4],
+        post_ci_male$percent[4],        
+        delta_ci_male$percent[4]
+        ),
+    hi = c(
+        pre_ci_fempre$percent[5],
+        post_ci_fempre$percent[5],        
+        delta_ci_fempre$percent[5],
+        pre_ci_fempost$percent[5],
+        post_ci_fempost$percent[5],        
+        delta_ci_fempost$percent[5],
+        pre_ci_male$percent[5],
+        post_ci_male$percent[5],        
+        delta_ci_male$percent[5]
+        )
+)
+
+INRmedians$lo <- round(INRmedians$lo, 2)
+INRmedians$hi <- round(INRmedians$hi, 2)
+
+premd <- INRmedians[c(1, 4, 7), ]
+postmd <- INRmedians[c(2, 5, 8), ]
+deltamd <- INRmedians[c(3, 6, 9), ]
+
+# 0.99 quantile for x-limits
+max_q975 <- INRs %>%
+    group_by(sex_group_patient, variable) %>%
+    summarise(q975 = quantile(INR, p=0.975)) %>%
+    pull(q975) %>%
+    max()
+# Lower limit
+min_INR <- INRs %>%
+    group_by(sex_group_patient, variable) %>%
+    summarise(min = min(INR, na.rm=TRUE)) %>%
+    pull(min) %>%
+    min()
+
+# Ns for plot
+INRs_N <- INRs %>%
+    filter(INR <= max_q975) %>%
+    group_by(sex_group_patient) %>%
+    mutate(N = round(n() / 2)) %>%
+    filter(variable == "pre") %>%
+    select(sex_group_patient, variable, N) %>%
+    distinct()
+
+# df for "Medians [99% CI]" title lol
+titles <- data.frame(
+    lab = rep("Medians [99% CI]", 3),
+    sex_group_patient = factor(c("Female | Premenopausal", "Female | Postmenopausal", "Male"), levels = c("Female | Premenopausal", "Female | Postmenopausal", "Male")),
+    variable = rep("pre", 3)
+    )
+
+ggplot(INRs, aes(x = INR, fill = factor(variable, levels = c("pre", "post")))) +
+    geom_density() +
+    scale_fill_manual(values = gray(c(0.7, 0.3), 0.5), name = "", labels = c("Before transfusion", "After transfusion")) +
+    geom_text(data=titles, aes(label = "Medians [99% CI]", x = 2, y = 1.75), fontface = "bold", size = 3, hjust = 0) +
+    geom_text(data = INRs_N, aes(label = paste("N:", format(N, big.mark = ",", trim = T)), fontface = "bold", x = 1.5, y = 1.4), size = 4, hjust = 0) +
+    geom_text(data = premd, 
+              aes(label = paste0(
+                    "Before transfusion(s): ", md, " [", lo,", ", hi, "]"
+                    ), 
+                  x = 2, 
+                  y = 1.4
+                 ), 
+              size = 3, 
+              hjust = 0
+             ) +
+    geom_text(data = postmd, 
+            aes(label = paste0(
+                "After transfusion(s): ", md, " [", lo,", ", hi, "]"
+                ), 
+                x = 2, 
+                y = 1.05
+                ), 
+            size = 3, 
+            hjust = 0
+            ) +
+    geom_text(data = deltamd, 
+            aes(label = paste0(
+                "Δ per transfused unit: ", round(md, 4), " [", lo,", ", hi, "]"
+                ), 
+                x = 2, 
+                y = 0.7
+                ), 
+            size = 3, 
+            hjust = 0
+            ) +
+    geom_vline(data = premd, aes(xintercept = md), linetype = "dotdash") +
+    geom_vline(data = postmd, aes(xintercept = md), linetype = "dashed") +
+    facet_wrap(vars(sex_group_patient), ncol = 1) +
+    theme_minimal() +
+    labs(y = "Density", x="INR") +
+    scale_x_continuous(breaks = seq(0.5, max_q975, by=0.5), limits = c(min_INR, max_q975)) +
+    theme(legend.position = "bottom", strip.text = element_text(size = 13), axis.text = element_text(size = 13), axis.title = element_text(size = 13), legend.text = element_text(size = 13), axis.title.x = element_text(margin = margin(t = 14)))
+
+ggsave("./results/manuscript1_plots/S5_B.png", width = 2000, height = 2000, units = "px", bg = "white")
+ggsave("./results/manuscript1_plots/svg/S5_B.svg", width = 2000, height = 2000, units = "px", bg = "white")
+
+# Results computed over
+100 * sum(INRs$epis_n) / 2 / nrow(master) #%
+# of units
+```
+
+## Blood types by product
+
+```{r}
+master <- master %>%
+    mutate(
+        bloodType_ID = paste0(abo_patient, " ", rhd_patient),
+        bloodType_unit = paste0(abo_product, " ", rhd_product)
+    )
+master$abo_patient <- factor(master$abo_patient, levels = c("O", "A", "B", "AB"))
+master$abo_product <- factor(master$abo_product, levels = c("O", "A", "B", "AB"))
+master$rhd_patient <- factor(master$rhd_patient, levels = c("pos", "neg"))
+master$rhd_product <- factor(master$rhd_product, levels = c("pos", "neg"))
+
+master$bloodType_ID <- factor(master$bloodType_ID, levels = c("AB pos", "AB neg", "A pos", "A neg", "B pos", "B neg", "O pos", "O neg", "A NA", "B NA", "O NA", "NA pos", "NA neg", "NA NA"))
+master$bloodType_unit <- factor(master$bloodType_unit, levels = c("AB pos", "AB neg", "A pos", "A neg", "B pos", "B neg", "O pos", "O neg", "A NA", "B NA", "O NA", "NA pos", "NA neg", "NA NA"))
+
+master$type_product <- factor(master$type_product, levels = c("RBC", "Platelets", "Plasma"))
+
+master %>%
+    filter(type_product == "RBC") %>%
+    filter( !is.na(abo_patient) & !is.na(abo_product) & !is.na(rhd_patient) & !is.na(rhd_product)) %>%
+    ggplot(aes(x = bloodType_ID, fill = bloodType_unit)) +
+        geom_bar() +
+        facet_wrap(~type_product, ncol=1)
+
+abo_plot <- master %>%
+    filter(!is.na(type_product)) %>%
+    filter(!is.na(abo_patient) & !is.na(abo_product)) %>%
+    group_by(type_product, abo_patient, abo_product) %>%
+    filter(n_distinct(id_patient) >= 5) %>%
+    summarise(n = n())
+
+bg_colors = c("#00BFB2", "#e7298a", "#e6ab02", "#342e37")
+
+ggplot(abo_plot, aes(x = abo_patient, y = n/sum(abo_plot$n)*100, fill = abo_product)) +
+        geom_bar(stat="identity") +
+        facet_wrap(~type_product, nrow=1) +
+        scale_fill_manual(values = bg_colors, name = "ABO group of\ntransfused unit") +
+        scale_y_continuous(expand = c(0.01,0.01), breaks = seq(0,25,by=5)) +
+        theme_minimal() +
+        theme(
+            axis.text.x = element_text(size = 12),
+            axis.text.y = element_text(size = 12),
+            text = element_text(size = 12),
+            legend.position="top", 
+            axis.title.x = element_text(margin = margin(t = 14)),
+            strip.text = element_text(size = 12)
+        ) +
+        labs(x = "ABO group of patient", y = "Percent of transfused units (%)")
+
+
+ggsave("./results/manuscript1_plots/S6.png", width = 3000, height = 1500, bg = "white", units = "px")
+ggsave("./results/manuscript1_plots/svg/S6.svg", width = 3000, height = 1500, bg = "white", units = "px")
+```

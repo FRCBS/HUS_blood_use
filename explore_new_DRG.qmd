@@ -1,0 +1,93 @@
+---
+title: "Explore new DRG files"
+format: html
+---
+
+```{r}
+# Libraries
+library(reticulate) # for pyenv stuff
+pandas <- import("pandas") # for fastparquet to work
+library(parallel) # for detectCores
+library(doParallel) # for registerDoParallel
+library(tidyr) # for unnest
+library(dplyr)
+library(ggplot2) # for plotting
+library(purrr) # for map_int
+```
+
+# Load data
+
+Not all will probably fit into memory simultaneously.
+
+```{r}
+og <- readRDS("./results/data/jakso_drg_koodi.rds")
+names(og)
+min(og$pvmalku)
+max(og$pvmalku)
+```
+
+```{r}
+new1 <- readRDS("./results/data/drg2024_pre2022_1.rds")
+names(new1) # different columns than in og
+min(new1$pvmalku)
+max(new1$pvmalku)
+
+new2 <- readRDS("./results/data/drg2024_pre2022_2.rds")
+names(new2) # different columns than in new1
+min(new2$alkuhetki)
+max(new2$alkuhetki)
+```
+
+```{r}
+new3 <- readRDS("./results/data/drg2024_post2022.rds")
+names(new3) # again different columns
+min(new3$alkuhetki, na.rm = T)
+max(new3$alkuhetki, na.rm = T) # 2024-05-22!! >:(
+```
+
+```{r}
+ggplot(new3, aes(x = alkuhetki)) +
+    geom_density(alpha = 0.6) +
+    theme_minimal()
+
+ggsave("newDRG_timedist.png", bg = "white")
+```
+
+# Combined
+
+## Select relevant columns
+
+NB! All three of these contain all sorts of useful information (like diag/eala) that gets dropped here. We might return to look at it at a later point, but currently we're interested in the actual DRGs, SHJAKSO_NUM and time stamps.
+
+drg:
+new1 -- `drg_alkup`
+new2 -- `drg`
+new3 -- `Drg_alkup`
+
+time stamps:
+new1 -- `pvmalku` and `pvmlahto`
+new2 -- `alkuhetki` and `loppuhetki`
+new3 -- `alkuhetki` and `loppuhetki`
+
+shjakso_numero:
+new1 -- `id_oshoito_kaynti`
+new2 -- `shjakso_numero` (NB!! Also has `id_oshoito_kaynti` but they don't match to shnum elsewhere, unlike in new1)
+new3 -- `shjakso_numero`
+
+```{r}
+new1_sel <- new1 %>%
+    select(henkilotunnus, drg_alkup, pvmalku, pvmlahto, id_oshoito_kaynti) %>%
+    rename(drg = drg_alkup, alkuhetki = pvmalku, loppuhetki = pvmlahto, shjakso_numero = id_oshoito_kaynti)
+new2_sel <- new2 %>%
+    select(henkilotunnus, drg, alkuhetki, loppuhetki, shjakso_numero)
+new3_sel <- new3 %>%
+    select(henkilotunnus, Drg_alkup, alkuhetki, loppuhetki, shjakso_numero) %>%
+    rename(drg = Drg_alkup)
+rm(new1, new2, new3)
+```
+
+```{r}
+new_drgs <- bind_rows(new1_sel, new2_sel, new3_sel)
+
+saveRDS(new_drgs, "./results/data/new_drgs_neat.rds")
+```

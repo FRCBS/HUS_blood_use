@@ -34,11 +34,11 @@ set.seed(123)
 master <- readRDS("./results/data/master_blood_use.rds")
 ```
 
-# Remove our power user
+# Remove outlier
 
 ```{r}
 master <- master %>%
-    filter(id_patient != "02091_2348747")
+    filter(id_patient != "xxxx_xxxxxxx")
 ```
 
 # Time series descriptives

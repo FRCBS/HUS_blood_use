@@ -8,6 +8,11 @@ format:
 self-contained: true
 ---
 
+-- NB! --
+Updated 21.10.2024 due to change of journal. Changes:
+1. DRGs removed from Table 1 into their own bar chart.
+2. Colored all figures.
+
 ```{r}
 # Libraries n such
 library(dplyr)
@@ -636,49 +641,95 @@ eala_table <- data.frame(descriptive = rep("EALAs", 15),
                          women_Q75 = NA)
 
 table1 <- bind_rows(table1, eala_table)
+saveRDS(table1, "./results/blood_use_Table_1.rds")
 ```
 
-## Number of transfusions by DRG
+# Number of transfusions by DRG
+
+No longer part of Table 1. Its own Figure now. Number unknown at the moment.
 
 ```{r}
-transfused_DRG <- master %>%
+fill_colors <- c("#e7298a", "#00BFB2", "#e6ab02")
+
+pdf_drg <- master %>%
+    filter(!is.na(code_drg) & !is.na(type_product) & sex_patient != "Ei tiedossa/Määriteltävissä") %>%
+    group_by(code_drg, sex_patient, type_product) %>%
+    summarise(drg_count = n()) %>%
     group_by(code_drg) %>%
-    mutate(drg_sum = n()) %>%
-    group_by(drg, sex_patient) %>%
-    mutate(drg_sex_sum = n()) %>%
-    group_by(sex_patient) %>%
-    mutate(sex_n = n()) %>%
-    select(code_drg, drg_sum, sex_patient, drg_sex_sum, sex_n) %>%
-    distinct() %>%
-    filter(!is.na(code_drg)) %>%
+    mutate(sum = sum(drg_count)) %>%
     ungroup() %>%
-    mutate(pct = drg_sum / nrow(master),
-           pct_sex = drg_sex_sum / sex_n) %>%
-    arrange(desc(drg_sum))
+    arrange(desc(sum)) %>%
+    mutate(sex_patient = ifelse(sex_patient == "Mies", "Male", "Female"))
 
-# 13.6.2024
-# this below is broken, read results from transfused_DRG instead
-drg_table <- data.frame(descriptive = rep("DRGs", 15),
-                        subgroup = unique(transfused_DRG$code_drg)[1:15],
-                        overall = unique(transfused_DRG$drg_sum)[1:15],
-                        overall_p = unique(transfused_DRG$pct)[1:15],
-                        o_Q25 = NA,
-                        o_Q75 = NA,
-                        men = transfused_DRG[transfused_DRG$sex_patient == "Mies", ]$drg_sex_sum[1:15],
-                        men_p = transfused_DRG[transfused_DRG$sex_patient == "Mies", ]$pct_sex[1:15],
-                        men_Q25 = NA,
-                        men_Q75 = NA,
-                        women = transfused_DRG[transfused_DRG$sex_patient == "Nainen", ]$drg_sex_sum[1:15],
-                        women_p = transfused_DRG[transfused_DRG$sex_patient == "Nainen", ]$pct_sex[1:15],
-                        women_Q25 = NA,
-                        women_Q75 = NA)
+drg_N <- master %>%
+    filter(!is.na(code_drg) & !is.na(type_product) & sex_patient != "Ei tiedossa/Määriteltävissä") %>%
+    nrow() * 100 / nrow(master)
 
-# dirty fix: remove count from men in drg category 372 (Vaginal delivery)
-# (the count comes from one row below due to the way we gather the drg_table)
-drg_table[drg_table$subgroup == "372", c("men", "men_p")] <- 0
+drg_order <- pdf_drg %>%
+    distinct(code_drg)
 
-table1 <- bind_rows(table1, drg_table)
-saveRDS(table1, "./results/blood_use_Table_1.rds")
+pdf_drg_topn <- pdf_drg %>%
+    filter(code_drg %in% drg_order$code_drg[1:15])
+
+# Add labels manually
+pdf_drg_topn <- pdf_drg_topn %>%
+    mutate(label_drg = case_when(
+        code_drg == "817O" ~ "Non-ext. procedure of myeloprolif. disease",
+        code_drg == "395" ~ "Red blood cell disorders",
+        code_drg == "473" ~ "Acute leukemia w/o major OR procedure",
+        code_drg == "816O" ~ "Non-ext. procedure of blood and imm. disease",
+        code_drg == "174N" ~ "Complex peptic ulcer / GI-hemorrhage",
+        code_drg == "916O" ~ "Disease or disorder of blood forming organs or imm. disorder",
+        code_drg == "480" ~ "Liver transplanation",
+        code_drg == "210N" ~ "Pelvic, hip and femur procedures ex. major joint with CC",
+        code_drg == "110" ~ "Major cardiovascular procedures with CC",
+        code_drg == "148" ~ "Major small and large bowel procedures with CC",
+        code_drg == "104B" ~ "Multiple heart valve / single valve operations with CC",
+        code_drg == "478" ~ "Other vascular procedures with CC",
+        code_drg == "483B" ~ "Intensive circulatory support w/o heart or lung transplantation",
+        code_drg == "175N" ~ "Peptic ulcer / GI-hemorrhage w/o CC",
+        code_drg == "917O" ~ "Myeloprolif. disease or disorder or poorly diff. neoplasms",
+    ))
+
+
+discrete_y <- unique(pdf_drg_topn$label_drg)
+# Break long labels
+discrete_y_split <- splitAtCentralWhitespace(discrete_y, 33)
+
+pdf_drg_topn_py <- pdf_drg_topn %>%
+  mutate(x_transformed = ifelse(sex_patient == "Female", 100 * drg_count / nrow(master) * -1, 100 * drg_count / nrow(master)))
+
+# Create a dummy dataframe for the geom_blank
+# We need the geom_blank to force free_x scale to be equal
+# for both faceted panels
+dummy_df <- data.frame(
+  label_drg = unique(pdf_drg_topn$label_drg),
+  x_transformed = -2.25, # edit this?
+  type_product = NA,
+  sex_patient = "Female"
+)
+
+ggplot(pdf_drg_topn_py,
+    aes(
+        y = factor(label_drg, levels = rev(discrete_y)), 
+        x = x_transformed, 
+        fill = type_product
+    )
+    ) +
+    geom_bar(stat = "identity") +
+    geom_blank(data = dummy_df, aes(x = x_transformed)) +
+    # figure out an annotation for faceted plots
+    scale_y_discrete(labels = discrete_y_split) +
+    scale_fill_manual(values = fill_colors, breaks = c("RBC", "Platelets", "Plasma")) +
+    facet_wrap(vars(sex_patient), scales = "free_x") +
+    theme_minimal() +
+    labs(x = "Percent of all transfused units", y = "Diagnosis Related Group", fill = "Product type") +
+    theme(legend.position = "bottom", text = element_text(size = 13), panel.spacing = unit(0, "lines")) +
+    scale_x_continuous(labels = abs)
+
+
+ggsave("./results/manuscript1_plots/Figure DRG.png", width = 3000, height = 3000, units = "px", bg = "white")
+ggsave("./results/manuscript1_plots/svg/Figure DRG.svg", width = 3000, height = 3000, units = "px", bg = "white")
 ```
 
 # Multicomponent transfusions
@@ -735,6 +786,8 @@ labelorder <- plotmultis %>%
 Single vs. Multicomponent | yes or no %
 
 ```{r}
+fill_colors <- c("#e7298a", "#00BFB2", "#e6ab02")
+
 multis_yesno <- multis %>%
     mutate(single_or_multi = ifelse(episode_components %in% c("RBC", "FFP", "PLT"), "Single component", "Multicomponent"))
 
@@ -749,7 +802,7 @@ ggplot(
         position = "dodge"
     ) +
     scale_fill_manual(
-        values = gray(c(0.3, 0.7)),
+        values = rev(fill_colors[1:2]),
         name = "Sex"
     ) +
     labs(
@@ -783,6 +836,8 @@ ggsave(
 Single component distirbution | RBC Platelet Plasma %
 
 ```{r}
+fill_colors <- c("#e7298a", "#00BFB2", "#e6ab02")
+
 singles <- multis %>%
     filter(episode_components %in% c("RBC", "FFP", "PLT")) %>%
     mutate(episode_components = case_when(
@@ -802,7 +857,7 @@ ggplot(
         position = "dodge"
     ) +
     scale_fill_manual(
-        values = gray(c(0.3, 0.7)),
+        values = rev(fill_colors[1:2]),
         name = "Sex"
     ) +
     labs(
@@ -836,6 +891,8 @@ ggsave(
 Multicomponent distirbution | %
 
 ```{r}
+fill_colors <- c("#e7298a", "#00BFB2", "#e6ab02")
+
 only_multis <- multis %>%
     filter(!(episode_components %in% c("RBC", "FFP", "PLT")) & !is.na(episode_components)) %>%
     mutate(episode_components = case_when(
@@ -856,7 +913,7 @@ ggplot(
         position = "dodge"
     ) +
     scale_fill_manual(
-        values = gray(c(0.3, 0.7)),
+        values = rev(fill_colors[1:2]),
         name = "Sex"
     ) +
     labs(
@@ -890,6 +947,8 @@ ggsave(
 ## Figure 4
 
 ```{r}
+fill_colors <- c("#e7298a", "#00BFB2", "#e6ab02")
+
 pdf_icd2 <- master %>%
     filter(!is.na(plot_label_icd_level_2_label) & !is.na(type_product) & sex_patient != "Ei tiedossa/Määriteltävissä") %>%
     group_by(plot_label_icd_level_2_label, sex_patient, type_product) %>%
@@ -938,7 +997,7 @@ ggplot(pdf_icd2_topn_py,
     geom_blank(data = dummy_df, aes(x = x_transformed)) +
     # figure out an annotation for faceted plots
     scale_y_discrete(labels = discrete_y_split) +
-    scale_fill_manual(values = gray(c(0.3, 0.5, 0.7)), breaks = c("RBC", "Platelets", "Plasma")) +
+    scale_fill_manual(values = fill_colors, breaks = c("RBC", "Platelets", "Plasma")) +
     facet_wrap(vars(sex_patient), scales = "free_x") +
     theme_minimal() +
     labs(x = "Percent of all transfused units", y = "ICD-10 Category", fill = "Product type") +
@@ -976,6 +1035,8 @@ sum(abs(pdf_icd2_topn_py$x_transformed))
 ## Figure 5
 
 ```{r}
+fill_colors <- c("#e7298a", "#00BFB2", "#e6ab02")
+
 pdf_liittyy <- master %>%
     mutate(liittyy_extra = if_else(associated_w_or_event != "No", associated_w_or_event, conservative_operative)) %>%
     filter(!is.na(liittyy_extra) & !is.na(type_product)) %>%
@@ -1033,7 +1094,7 @@ ggplot(pdf_liittyy, aes(x = factor(liittyy_extra, levels = c("Conservative", "Op
                      pattern_frequency = 3, 
                      pattern_angle = 45) +
     scale_pattern_manual(values=c('stripe', 'none')) +
-    scale_fill_manual(values = gray(c(0.3, 0.5, 0.7)), breaks = c("RBC", "Platelets", "Plasma")) +
+    scale_fill_manual(values = fill_colors, breaks = c("RBC", "Platelets", "Plasma")) +
     scale_x_discrete(labels = c("Conservative\nspecialty", "Operative\nspecialty", "Preoperative", "Intraoperative", "Postoperative")) +
     labs(x = "Relation to an operation",
          y = "Percent of transfused units",
@@ -1061,6 +1122,8 @@ pdf_liittyy %>%
 ## Figure 6
 
 ```{r}
+fill_colors <- c("#e7298a", "#00BFB2", "#e6ab02")
+
 pdf_toim2 <- master %>%
     filter(!is.na(plot_proc_level_2_label) & !is.na(type_product) & sex_patient != "Ei tiedossa/Määriteltävissä" & !(plot_proc_level_2_label %in% grep(" \\| NA", plot_proc_level_2_label, value = T))) %>%
     group_by(plot_proc_level_2_label, sex_patient, type_product) %>%
@@ -1099,7 +1162,7 @@ ggplot(pdf_toim2_topn_py, aes(y = factor(plot_proc_level_2_label, levels = rev(t
     geom_blank(data = dummy_df, aes(x = x_transformed)) +
     # figure out an annotation for faceted plots
     scale_y_discrete(labels = discrete_y_split) +
-    scale_fill_manual(values = gray(c(0.3, 0.5, 0.7)), breaks = c("RBC", "Platelets", "Plasma")) +
+    scale_fill_manual(values = fill_colors, breaks = c("RBC", "Platelets", "Plasma")) +
     facet_wrap(vars(sex_patient), scales = "free_x") +
     theme_minimal() +
     labs(x = "Percent of transfused units", y = "Procedures by functional-anatomical region (NCSP)", fill = "Product type") +
@@ -1406,9 +1469,11 @@ titles <- data.frame(
     variable = rep("pre", 3)
     )
 
+fill_colors <- c("#e7298a", "#00BFB2", "#e6ab02")
+
 ggplot(hbs, aes(x = Hb, fill = factor(variable, levels = c("pre", "post")))) +
-    geom_density() +
-    scale_fill_manual(values = gray(c(0.7, 0.3), 0.5), name = "", labels = c("Before transfusion", "After transfusion")) +
+    geom_density(alpha = 0.5) +
+    scale_fill_manual(values = rev(fill_colors[1:2]), name = "", labels = c("Before transfusion", "After transfusion")) +
     geom_text(data = titles, aes(label = lab, x = 113, y = 0.03), fontface = "bold", size = 3, hjust = 0) +
     geom_text(data = hbs_N, aes(label = paste0("N: ", format(N, big.mark = ",")), x = 30, y = 0.025), fontface = "bold", size = 4, hjust = 0) +
     geom_text(data = premd, 
@@ -1470,11 +1535,16 @@ master %>%
 bleeds <- master %>%
     filter(!is.na(sex_group_patient) & !is.na(weight_patient) & !is.na(height_patient)) %>%
     filter(bloodloss_pre != 0 | bloodloss_intra != 0) %>%
+    #group_by(id_patient) %>%
+    #arrange(desc(episode_start)) %>%
+    #mutate(episdiff = difftime(episode_start, lag(episode_end), units = "hours")) %>%
+    #ungroup() %>%
     mutate(blood_volume = case_when( # Nadler's equation
         sex_patient == "Mies" ~ 1000 * (0.3669 * (height_patient/100)^3 + 0.03219 * weight_patient + 0.6041),
         sex_patient == "Nainen" ~ 1000 * (0.34561 * (height_patient/100)^3 + 0.03308 * weight_patient + 0.1833)
         )
     ) %>%
+    #mutate(blood_volume = weight_patient * 70 / sqrt(bmi / 22)) %>% # LBB equation
     mutate(sex_group_patient = case_when(sex_group_patient == "mies" ~ "Male",
                                   sex_group_patient == "nainen_postmeno" ~ "Female | Postmenopausal",
                                   sex_group_patient == "nainen_premeno" ~ "Female | Premenopausal")) %>%
@@ -1602,7 +1672,7 @@ bleeds_N <- bleeds %>%
     distinct()
 
 ggplot(bleeds, aes(x = bloodloss_pct_per_unit)) +
-    geom_density(fill = gray(0.7), alpha = 0.5) +
+    geom_density(fill = "#e7298a", alpha = 0.5) +
     facet_wrap(vars(sex_group_patient), ncol = 1) +
     xlim(c(0, 20)) +
     geom_text(data = bootmedians[bootmedians$sex_group_patient != "Female | Premenopausal", ], aes(label = "Medians [99% CI]", fontface = "bold", x = 10, y = 0.10), size = 3, hjust = 0) +
@@ -1782,8 +1852,11 @@ ggsave("./results/manuscript1_plots/svg/S3.svg", bg = "white", width = 3000, hei
 ## Number of transfused units -distributions
 
 ```{r}
-fill_colors <- c("#e7298a", "#00BFB2", "#4e4553")
-color_colors <- c("#c71670", "#008c82", "#342e37")
+fill_colors <- c("#e7298a", "#00BFB2", "#4e4553") # With black
+# fill_colors <- c("#e7298a", "#00BFB2", "#e6ab02") # with yellow
+
+color_colors <- c("#c71670", "#008c82", "#342e37") # With black
+# color_colors <- c("#c71670", "#008c82", "#b38502") # with yellow
 
 master_filtered <- master %>% 
     filter(!is.na(type_product))
@@ -1793,6 +1866,7 @@ master$type_product <- factor(master$type_product, levels = c("RBC", "Platelets"
 
 # Episode wise
 p_episode <- transfusionEventDistribution_Grouped(
+    # master_filtered,
     master,
     variable="id_transfep",
     grouping_variable = "type_product",
